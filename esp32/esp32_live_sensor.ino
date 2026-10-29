@@ -18,6 +18,16 @@
 
 #define DHT_TYPE DHT11
 
+// Result of one NPK sensor read. Declared here (before any
+// function) so the Arduino auto-generated prototypes can see it.
+struct NPKReading {
+  bool valid;
+  uint16_t nitrogen;
+  uint16_t phosphorus;
+  uint16_t potassium;
+  const char* error;
+};
+
 // ======================================================
 // WIFI
 // ======================================================
@@ -201,26 +211,293 @@ float readSoilMoisture() {
 }
 
 // ======================================================
-// READ NPK
+// READ NPK (RS485 / MODBUS RTU)
 // ======================================================
 //
-// Currently returns 0.
-// RS485 NPK Modbus reading can be added later.
+// Reads N, P and K from the RS485 NPK sensor with a
+// Modbus RTU "read holding registers" request.
+//
+// The register map below is the one used by the common
+// 3-in-1 / 7-in-1 RS485 NPK probes (slave 0x01,
+// registers 0x001E, 0x001F, 0x0020 = N, P, K in mg/kg).
+// CHECK IT AGAINST YOUR SENSOR'S DATASHEET. If your
+// probe uses another address, baud rate or register map,
+// change only the constants here.
+//
+// A failed read is reported as invalid. It is NEVER sent
+// as 0, so the app can tell "no reading" from "0 mg/kg".
 //
 
-float readNitrogen() {
+const uint8_t  NPK_SLAVE_ADDRESS = 0x01;
+const uint16_t NPK_FIRST_REGISTER = 0x001E;
+const uint16_t NPK_REGISTER_COUNT = 3;
+const uint16_t NPK_MAX_VALID_VALUE = 1999;
+const unsigned long NPK_RESPONSE_TIMEOUT_MS = 600;
+const int NPK_MAX_ATTEMPTS = 2;
 
-  return 0.0;
+uint16_t modbusCRC16(
+    const uint8_t* data,
+    size_t length
+) {
+
+  uint16_t crc = 0xFFFF;
+
+  for (size_t i = 0; i < length; i++) {
+
+    crc ^= data[i];
+
+    for (int bit = 0; bit < 8; bit++) {
+
+      if (crc & 0x0001) {
+
+        crc = (crc >> 1) ^ 0xA001;
+
+      } else {
+
+        crc >>= 1;
+      }
+    }
+  }
+
+  return crc;
 }
 
-float readPhosphorus() {
+void printHexBytes(
+    const char* label,
+    const uint8_t* data,
+    size_t length
+) {
 
-  return 0.0;
+  Serial.print(label);
+
+  for (size_t i = 0; i < length; i++) {
+
+    if (data[i] < 0x10) {
+
+      Serial.print("0");
+    }
+
+    Serial.print(data[i], HEX);
+    Serial.print(" ");
+  }
+
+  Serial.println();
 }
 
-float readPotassium() {
+// One request/response attempt.
+// Returns nullptr on success, otherwise an error text.
+const char* npkTryRead(NPKReading &out) {
 
-  return 0.0;
+  // ---- build request: addr, 0x03, reg hi/lo, count hi/lo, CRC lo/hi
+  uint8_t request[8];
+
+  request[0] = NPK_SLAVE_ADDRESS;
+  request[1] = 0x03;
+  request[2] = NPK_FIRST_REGISTER >> 8;
+  request[3] = NPK_FIRST_REGISTER & 0xFF;
+  request[4] = NPK_REGISTER_COUNT >> 8;
+  request[5] = NPK_REGISTER_COUNT & 0xFF;
+
+  uint16_t requestCrc = modbusCRC16(request, 6);
+
+  request[6] = requestCrc & 0xFF;
+  request[7] = requestCrc >> 8;
+
+  // ---- throw away stale bytes
+  while (NPKSerial.available()) {
+
+    NPKSerial.read();
+  }
+
+  // ---- transmit (DE/RE high = driver enabled)
+  digitalWrite(RS485_DE_RE, HIGH);
+  delayMicroseconds(200);
+
+  NPKSerial.write(request, sizeof(request));
+  NPKSerial.flush();
+
+  delayMicroseconds(200);
+
+  // ---- receive (DE/RE low = receiver enabled)
+  digitalWrite(RS485_DE_RE, LOW);
+
+  printHexBytes("NPK TX: ", request, sizeof(request));
+
+  // Normal answer: addr, 0x03, 0x06, 6 data bytes, CRC = 11 bytes
+  const size_t EXPECTED_LENGTH =
+      5 + (NPK_REGISTER_COUNT * 2);
+
+  uint8_t response[32];
+  size_t received = 0;
+
+  unsigned long started = millis();
+
+  while (millis() - started < NPK_RESPONSE_TIMEOUT_MS) {
+
+    while (
+        NPKSerial.available() &&
+        received < sizeof(response)
+    ) {
+
+      response[received++] = NPKSerial.read();
+      started = millis();
+    }
+
+    if (received >= EXPECTED_LENGTH) {
+
+      break;
+    }
+
+    delay(2);
+  }
+
+  printHexBytes("NPK RX: ", response, received);
+
+  if (received == 0) {
+
+    return "no_response_timeout";
+  }
+
+  // ---- find the start of the frame (skips any noise byte)
+  size_t start = 0;
+  bool found = false;
+
+  for (size_t i = 0; i + 2 < received; i++) {
+
+    if (
+        response[i] == NPK_SLAVE_ADDRESS &&
+        (response[i + 1] == 0x03 ||
+         response[i + 1] == 0x83)
+    ) {
+
+      start = i;
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+
+    return "bad_response_header";
+  }
+
+  // ---- Modbus exception: addr, 0x83, code, CRC
+  if (response[start + 1] == 0x83) {
+
+    if (received - start < 5) {
+
+      return "short_response";
+    }
+
+    uint16_t exceptionCrc =
+        modbusCRC16(&response[start], 3);
+
+    if (
+        response[start + 3] != (exceptionCrc & 0xFF) ||
+        response[start + 4] != (exceptionCrc >> 8)
+    ) {
+
+      return "crc_mismatch";
+    }
+
+    Serial.print("NPK Modbus exception code: ");
+    Serial.println(response[start + 2]);
+
+    return "modbus_exception";
+  }
+
+  if (received - start < EXPECTED_LENGTH) {
+
+    return "short_response";
+  }
+
+  if (response[start + 2] != NPK_REGISTER_COUNT * 2) {
+
+    return "unexpected_byte_count";
+  }
+
+  uint16_t responseCrc =
+      modbusCRC16(&response[start], EXPECTED_LENGTH - 2);
+
+  if (
+      response[start + EXPECTED_LENGTH - 2] !=
+          (responseCrc & 0xFF) ||
+      response[start + EXPECTED_LENGTH - 1] !=
+          (responseCrc >> 8)
+  ) {
+
+    return "crc_mismatch";
+  }
+
+  // ---- registers are big-endian
+  uint16_t n =
+      (response[start + 3] << 8) | response[start + 4];
+
+  uint16_t p =
+      (response[start + 5] << 8) | response[start + 6];
+
+  uint16_t k =
+      (response[start + 7] << 8) | response[start + 8];
+
+  if (
+      n > NPK_MAX_VALID_VALUE ||
+      p > NPK_MAX_VALID_VALUE ||
+      k > NPK_MAX_VALID_VALUE
+  ) {
+
+    return "value_out_of_range";
+  }
+
+  out.nitrogen = n;
+  out.phosphorus = p;
+  out.potassium = k;
+
+  return nullptr;
+}
+
+NPKReading readNPK() {
+
+  NPKReading reading;
+
+  reading.valid = false;
+  reading.nitrogen = 0;
+  reading.phosphorus = 0;
+  reading.potassium = 0;
+  reading.error = "not_read";
+
+  for (int attempt = 1; attempt <= NPK_MAX_ATTEMPTS; attempt++) {
+
+    const char* error = npkTryRead(reading);
+
+    if (error == nullptr) {
+
+      reading.valid = true;
+      reading.error = nullptr;
+
+      return reading;
+    }
+
+    reading.error = error;
+
+    Serial.print("NPK read attempt ");
+    Serial.print(attempt);
+    Serial.print("/");
+    Serial.print(NPK_MAX_ATTEMPTS);
+    Serial.print(" failed: ");
+    Serial.println(error);
+
+    delay(150);
+  }
+
+  if (strcmp(reading.error, "no_response_timeout") == 0) {
+
+    Serial.println(
+        "NPK: no reply. Check sensor power (9-24V), "
+        "A/B wiring, shared GND, baud rate and slave address."
+    );
+  }
+
+  return reading;
 }
 
 // ======================================================
@@ -398,9 +675,7 @@ void sendSensorData(
     float temperature,
     float humidity,
     bool rain,
-    float nitrogen,
-    float phosphorus,
-    float potassium,
+    const NPKReading &npk,
     bool currentPumpState
 ) {
 
@@ -438,14 +713,23 @@ void sendSensorData(
   doc["rain"] =
       rain;
 
-  doc["nitrogen"] =
-      nitrogen;
+  // NPK: real values only. When the read failed, send null
+  // plus the reason instead of 0.
+  if (npk.valid) {
 
-  doc["phosphorus"] =
-      phosphorus;
+    doc["nitrogen"] = npk.nitrogen;
+    doc["phosphorus"] = npk.phosphorus;
+    doc["potassium"] = npk.potassium;
+    doc["npk_valid"] = true;
 
-  doc["potassium"] =
-      potassium;
+  } else {
+
+    doc["nitrogen"] = nullptr;
+    doc["phosphorus"] = nullptr;
+    doc["potassium"] = nullptr;
+    doc["npk_valid"] = false;
+    doc["npk_error"] = npk.error;
+  }
 
   doc["pump_status"] =
       currentPumpState
@@ -586,14 +870,8 @@ void readAndSendSensors() {
   // NPK
   // ====================================================
 
-  float nitrogen =
-      readNitrogen();
-
-  float phosphorus =
-      readPhosphorus();
-
-  float potassium =
-      readPotassium();
+  NPKReading npk =
+      readNPK();
 
   // ====================================================
   // DISPLAY
@@ -654,44 +932,26 @@ void readAndSendSensors() {
 
   Serial.println();
 
-  Serial.print(
-      "Nitrogen       : "
-  );
+  if (npk.valid) {
 
-  Serial.print(
-      nitrogen,
-      1
-  );
+    Serial.print("Nitrogen       : ");
+    Serial.print(npk.nitrogen);
+    Serial.println(" mg/kg");
 
-  Serial.println(
-      " mg/kg"
-  );
+    Serial.print("Phosphorus     : ");
+    Serial.print(npk.phosphorus);
+    Serial.println(" mg/kg");
 
-  Serial.print(
-      "Phosphorus     : "
-  );
+    Serial.print("Potassium      : ");
+    Serial.print(npk.potassium);
+    Serial.println(" mg/kg");
 
-  Serial.print(
-      phosphorus,
-      1
-  );
+  } else {
 
-  Serial.println(
-      " mg/kg"
-  );
-
-  Serial.print(
-      "Potassium      : "
-  );
-
-  Serial.print(
-      potassium,
-      1
-  );
-
-  Serial.println(
-      " mg/kg"
-  );
+    Serial.print("NPK            : NOT AVAILABLE (");
+    Serial.print(npk.error);
+    Serial.println(")");
+  }
 
   Serial.println();
 
@@ -725,9 +985,7 @@ void readAndSendSensors() {
       temperature,
       humidity,
       rain,
-      nitrogen,
-      phosphorus,
-      potassium,
+      npk,
       pumpOn
   );
 }

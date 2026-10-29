@@ -196,7 +196,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               sensor == null ? "--" : (sensor!.rain ? "DETECTED" : "NO RAIN"),
                               Icons.umbrella),
                           statCard("NPK",
-                              sensor == null ? "--" :
+                              sensor == null || !sensor!.npkValid ? "--" :
                               "N ${sensor!.nitrogen.toStringAsFixed(0)} / P ${sensor!.phosphorus.toStringAsFixed(0)} / K ${sensor!.potassium.toStringAsFixed(0)}",
                               Icons.science),
                           statCard("Pump",
@@ -204,6 +204,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               Icons.water_drop),
                         ],
                       ),
+                      if (sensor != null && sensor!.npkProblem.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Text(sensor!.npkProblem,
+                            style: TextStyle(color: Colors.orange[800])),
+                      ],
                       if (sensorError.isNotEmpty) ...[
                         const SizedBox(height: 10),
                         Text(sensorError, style: TextStyle(color: Colors.orange[800])),

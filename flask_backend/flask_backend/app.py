@@ -2,7 +2,9 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 from dotenv import load_dotenv
+import math
 import os
+import time
 
 
 # =========================================================
@@ -60,11 +62,72 @@ latest_sensor_data = {
     "temperature": 0,
     "humidity": 0,
     "rain": False,
-    "nitrogen": 0,
-    "phosphorus": 0,
-    "potassium": 0,
+    # NPK stays None (not 0) until a genuine reading arrives.
+    "nitrogen": None,
+    "phosphorus": None,
+    "potassium": None,
+    "npk_valid": False,
+    "npk_error": "no_data_received",
     "pump_status": "OFF"
 }
+
+# Unix time of the last POST from the ESP32 and the last POST that
+# carried a valid NPK reading (None until that happens).
+last_sensor_update = None
+last_npk_update = None
+
+# Typical RS485 NPK sensors report 0-1999 mg/kg. Anything outside
+# this range is a corrupted/misparsed frame, not a soil reading.
+NPK_MAX_VALID = 1999
+
+
+def parse_npk(data):
+    """
+    Validate the NPK part of an ESP32 payload.
+
+    Returns (values, error) where values is
+    {"nitrogen", "phosphorus", "potassium"} as floats, or all None
+    when the reading is not valid, and error is None or a short
+    reason string. Zero is NOT used as a stand-in for "no reading".
+    """
+
+    empty = {"nitrogen": None, "phosphorus": None, "potassium": None}
+
+    # Newer firmware states explicitly whether the NPK read worked.
+    if data.get("npk_valid") is False:
+        return empty, str(
+            data.get("npk_error") or "sensor_reported_invalid"
+        )
+
+    raw = {}
+
+    for key in ("nitrogen", "phosphorus", "potassium"):
+
+        value = data.get(key)
+
+        if value is None or isinstance(value, bool):
+            return empty, f"missing_{key}"
+
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return empty, f"non_numeric_{key}"
+
+        if math.isnan(value) or math.isinf(value):
+            return empty, f"non_numeric_{key}"
+
+        if value < 0 or value > NPK_MAX_VALID:
+            return empty, f"out_of_range_{key}"
+
+        raw[key] = value
+
+    # Older firmware always sent 0/0/0 because the RS485 read was
+    # never implemented. All three at exactly 0 with no validity
+    # flag is that placeholder, not a measurement.
+    if "npk_valid" not in data and not any(raw.values()):
+        return empty, "no_npk_data_from_esp32"
+
+    return raw, None
 
 
 # =========================================================
@@ -74,9 +137,21 @@ latest_sensor_data = {
 @app.route("/sensor_data", methods=["GET"])
 def get_sensor_data():
 
+    now = time.time()
+
     return jsonify({
         "success": True,
-        **latest_sensor_data
+        **latest_sensor_data,
+        # Seconds since the ESP32 last posted anything / a valid NPK
+        # reading (None if that has never happened).
+        "data_age_seconds": (
+            None if last_sensor_update is None
+            else round(now - last_sensor_update, 1)
+        ),
+        "npk_age_seconds": (
+            None if last_npk_update is None
+            else round(now - last_npk_update, 1)
+        )
     })
 
 
@@ -88,10 +163,14 @@ def get_sensor_data():
 def receive_sensor_data():
 
     global latest_sensor_data
+    global last_sensor_update
+    global last_npk_update
 
     try:
 
         data = request.get_json(silent=True) or {}
+
+        npk_values, npk_error = parse_npk(data)
 
         latest_sensor_data = {
 
@@ -111,25 +190,38 @@ def receive_sensor_data():
                 data.get("rain", False)
             ),
 
-            "nitrogen": float(
-                data.get("nitrogen", 0)
-            ),
+            "nitrogen": npk_values["nitrogen"],
 
-            "phosphorus": float(
-                data.get("phosphorus", 0)
-            ),
+            "phosphorus": npk_values["phosphorus"],
 
-            "potassium": float(
-                data.get("potassium", 0)
-            ),
+            "potassium": npk_values["potassium"],
+
+            "npk_valid": npk_error is None,
+
+            "npk_error": npk_error,
 
             "pump_status": str(
                 data.get("pump_status", "OFF")
             ).upper()
         }
 
+        last_sensor_update = time.time()
+
+        if npk_error is None:
+            last_npk_update = last_sensor_update
+
         print("\n========== ESP32 SENSOR DATA ==========")
         print(latest_sensor_data)
+
+        if npk_error is None:
+            print(
+                "NPK OK -> N:", latest_sensor_data["nitrogen"],
+                "P:", latest_sensor_data["phosphorus"],
+                "K:", latest_sensor_data["potassium"], "mg/kg"
+            )
+        else:
+            print("NPK NOT AVAILABLE:", npk_error)
+
         print("=======================================\n")
 
         return jsonify({
