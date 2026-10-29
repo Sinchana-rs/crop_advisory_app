@@ -1,0 +1,53 @@
+# Live ESP32 -> Flask -> Flutter integration
+
+## 1. Flask
+Open:
+flask_backend/flask_backend/app.py
+
+Run from the flask_backend/flask_backend folder:
+python app.py
+
+It listens on 0.0.0.0:5000.
+
+## 2. Find the computer IPv4 address
+On Windows CMD:
+ipconfig
+
+Find "IPv4 Address", for example:
+192.168.1.5
+
+## 3. ESP32 code
+Open:
+esp32/esp32_live_sensor.ino
+
+Change:
+YOUR_WIFI_NAME
+YOUR_WIFI_PASSWORD
+and SERVER_URL to:
+http://YOUR_PC_IPV4:5000/sensor_data
+
+Example:
+http://192.168.1.5:5000/sensor_data
+
+Upload to ESP32.
+
+## 4. Flutter
+Open:
+lib/services/sensor_service.dart
+
+Change:
+const String apiBaseUrl = "http://192.168.1.5:5000";
+
+to your PC IPv4 address.
+
+Then run:
+flutter pub get
+flutter run
+
+The Dashboard polls /sensor_data every 3 seconds.
+Irrigation automatically uses live soil/temperature/humidity values.
+Fertilizer automatically receives live N/P/K values; crop, soil type and pH remain manual because there is no crop/soil-type/pH sensor in the current hardware.
+
+IMPORTANT:
+Phone/ESP32 and the computer running Flask must be on the same Wi-Fi network.
+If Windows Firewall blocks Python, allow Python/port 5000 on Private networks.

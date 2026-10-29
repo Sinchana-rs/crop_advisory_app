@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "69503472693",
+    "project_id": "crop-advisory-system-19a21",
+    "storage_bucket": "crop-advisory-system-19a21.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:69503472693:android:0154c11494b2f8f3524d7c",
+        "android_client_info": {
+          "package_name": "com.example.crop_advisory_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCD1Ydog0Y3fwgiFdRQAAVPQ4SFOkbMZKw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
