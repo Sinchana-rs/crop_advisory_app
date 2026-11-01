@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dashboard_screen.dart';
+import '../services/language_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -25,17 +26,17 @@ class _LoginScreenState extends State<LoginScreen> {
     final password = passwordController.text.trim();
 
     if (email.isEmpty) {
-      showMessage("Please enter your email address.");
+      showMessage(LanguageService.t("auth_enter_email"));
       return;
     }
 
     if (password.isEmpty) {
-      showMessage("Please enter your password.");
+      showMessage(LanguageService.t("auth_enter_password"));
       return;
     }
 
     if (!isValidEmail(email)) {
-      showMessage("Please enter a valid email address.");
+      showMessage(LanguageService.t("auth_valid_email"));
       return;
     }
 
@@ -66,40 +67,40 @@ class _LoginScreenState extends State<LoginScreen> {
         case 'user-not-found':
         case 'invalid-credential':
           message =
-              "No account found with this email or the password is incorrect.";
+              LanguageService.t("auth_bad_credentials");
           break;
 
         case 'wrong-password':
-          message = "Incorrect password. Please try again.";
+          message = LanguageService.t("auth_wrong_password");
           break;
 
         case 'invalid-email':
-          message = "Please enter a valid email address.";
+          message = LanguageService.t("auth_valid_email");
           break;
 
         case 'user-disabled':
-          message = "This account has been disabled.";
+          message = LanguageService.t("auth_user_disabled");
           break;
 
         case 'too-many-requests':
           message =
-              "Too many login attempts. Please try again later.";
+              LanguageService.t("auth_too_many");
           break;
 
         case 'network-request-failed':
           message =
-              "Network error. Please check your internet connection.";
+              LanguageService.t("auth_network");
           break;
 
         default:
           message =
-              "Login failed. Please check your email and password.";
+              LanguageService.t("auth_login_failed");
       }
 
       showMessage(message);
     } catch (e) {
       if (!mounted) return;
-      showMessage("Something went wrong. Please try again.");
+      showMessage(LanguageService.t("auth_generic"));
     } finally {
       if (mounted) {
         setState(() {
@@ -118,23 +119,23 @@ class _LoginScreenState extends State<LoginScreen> {
     final password = passwordController.text.trim();
 
     if (email.isEmpty) {
-      showMessage("Please enter your email address.");
+      showMessage(LanguageService.t("auth_enter_email"));
       return;
     }
 
     if (password.isEmpty) {
-      showMessage("Please enter a password.");
+      showMessage(LanguageService.t("auth_enter_new_password"));
       return;
     }
 
     if (!isValidEmail(email)) {
-      showMessage("Please enter a valid email address.");
+      showMessage(LanguageService.t("auth_valid_email"));
       return;
     }
 
     if (password.length < 6) {
       showMessage(
-        "Password must contain at least 6 characters.",
+        LanguageService.t("auth_password_min6"),
       );
       return;
     }
@@ -153,7 +154,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       showMessage(
-        "Account created successfully. You can now login.",
+        LanguageService.t("auth_account_created"),
       );
 
       // Clear password after successful registration.
@@ -167,37 +168,37 @@ class _LoginScreenState extends State<LoginScreen> {
       switch (e.code) {
         case 'email-already-in-use':
           message =
-              "An account already exists with this email. Please login.";
+              LanguageService.t("auth_email_in_use");
           break;
 
         case 'invalid-email':
-          message = "Please enter a valid email address.";
+          message = LanguageService.t("auth_valid_email");
           break;
 
         case 'weak-password':
           message =
-              "Password is too weak. Use at least 6 characters.";
+              LanguageService.t("auth_weak_password");
           break;
 
         case 'operation-not-allowed':
           message =
-              "Email/password registration is not enabled in Firebase.";
+              LanguageService.t("auth_op_not_allowed");
           break;
 
         case 'network-request-failed':
           message =
-              "Network error. Please check your internet connection.";
+              LanguageService.t("auth_network");
           break;
 
         default:
           message =
-              "Registration failed. Please try again.";
+              LanguageService.t("auth_register_failed");
       }
 
       showMessage(message);
     } catch (e) {
       if (!mounted) return;
-      showMessage("Something went wrong. Please try again.");
+      showMessage(LanguageService.t("auth_generic"));
     } finally {
       if (mounted) {
         setState(() {
@@ -216,14 +217,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (email.isEmpty) {
       showMessage(
-        "Please enter your registered email first.",
+        LanguageService.t("auth_enter_registered_email"),
       );
       return;
     }
 
     if (!isValidEmail(email)) {
       showMessage(
-        "Please enter a valid email address.",
+        LanguageService.t("auth_valid_email"),
       );
       return;
     }
@@ -240,7 +241,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       showMessage(
-        "Password reset email sent to $email",
+        LanguageService.t("auth_reset_sent").replaceAll("{email}", email),
       );
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
@@ -250,22 +251,22 @@ class _LoginScreenState extends State<LoginScreen> {
       switch (e.code) {
         case 'user-not-found':
           message =
-              "No account is registered with this email.";
+              LanguageService.t("auth_no_account");
           break;
 
         case 'invalid-email':
           message =
-              "Please enter a valid email address.";
+              LanguageService.t("auth_valid_email");
           break;
 
         case 'network-request-failed':
           message =
-              "Network error. Please check your internet connection.";
+              LanguageService.t("auth_network");
           break;
 
         default:
           message =
-              "Unable to send password reset email.";
+              LanguageService.t("auth_reset_failed");
       }
 
       showMessage(message);
@@ -273,7 +274,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       showMessage(
-        "Something went wrong. Please try again.",
+        LanguageService.t("auth_generic"),
       );
     } finally {
       if (mounted) {
@@ -390,7 +391,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   // =================================================
 
                   Text(
-                    "AgriSense AI",
+                    LanguageService.t("appName"),
                     style: TextStyle(
                       fontSize: 30,
                       fontWeight: FontWeight.bold,
@@ -401,7 +402,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 8),
 
                   Text(
-                    "Login",
+                    LanguageService.t("auth_login"),
                     style: const TextStyle(
                       fontSize: 24,
                       fontWeight: FontWeight.bold,
@@ -422,7 +423,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         TextInputType.emailAddress,
 
                     decoration: InputDecoration(
-                      hintText: "Email ID",
+                      hintText: LanguageService.t("auth_email_hint"),
                       prefixIcon:
                           const Icon(Icons.email),
 
@@ -450,7 +451,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     obscureText: obscurePassword,
 
                     decoration: InputDecoration(
-                      hintText: "Password",
+                      hintText: LanguageService.t("auth_password_hint"),
 
                       prefixIcon:
                           const Icon(Icons.lock),
@@ -498,7 +499,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               : forgotPassword,
 
                       child: Text(
-                        "Forgot Password?",
+                        LanguageService.t("auth_forgot"),
                         style: TextStyle(
                           color:
                               Colors.green.shade900,
@@ -549,8 +550,8 @@ class _LoginScreenState extends State<LoginScreen> {
                                 strokeWidth: 2,
                               ),
                             )
-                          : const Text(
-                              "Login",
+                          : Text(
+                              LanguageService.t("auth_login"),
                               style: TextStyle(
                                 fontWeight:
                                     FontWeight.bold,
@@ -569,8 +570,8 @@ class _LoginScreenState extends State<LoginScreen> {
                     onPressed:
                         isLoading ? null : register,
 
-                    child: const Text(
-                      "Don't have an account? Register",
+                    child: Text(
+                              LanguageService.t("auth_register_prompt"),
                       style: TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,

@@ -51,3 +51,7 @@ app.*.map.json
 !.env.sample
 
 /crop_advisory_app/
+
+# Local backups and generated price cache
+_backup_before_*/
+flask_backend/flask_backend/price_cache.json

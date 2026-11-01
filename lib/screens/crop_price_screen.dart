@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../services/language_service.dart';
+import '../services/sensor_service.dart';
 
 class CropPriceScreen extends StatefulWidget {
   @override
@@ -11,6 +12,8 @@ class CropPriceScreen extends StatefulWidget {
 class _CropPriceScreenState extends State<CropPriceScreen> {
   List prices = [];
   bool loading = false;
+  String? errorMessage;
+  String? staleNote;
 
   final commodityController = TextEditingController(text: "Tomato");
   final stateController = TextEditingController(text: "Karnataka");
@@ -201,12 +204,14 @@ class _CropPriceScreenState extends State<CropPriceScreen> {
   Future<void> fetchCropPrices() async {
     setState(() {
       loading = true;
+      errorMessage = null;
+      staleNote = null;
       prices = [];
     });
 
     try {
       final response = await http.post(
-        Uri.parse("http://127.0.0.1:5000/crop_prices"),
+        Uri.parse("$apiBaseUrl/crop_prices"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
           "crop": commodityController.text.trim(),
@@ -218,12 +223,20 @@ class _CropPriceScreenState extends State<CropPriceScreen> {
       final apiRecords = data["records"] ?? [];
 
       setState(() {
-        prices = apiRecords.isNotEmpty ? apiRecords : fallbackPrices;
+        prices = apiRecords;
+        staleNote = data["stale_note"];
+        errorMessage = apiRecords.isEmpty
+            ? (data["success"] == false
+                ? "Could not load live prices right now. Please try again."
+                : "No live prices found for this crop and state today.")
+            : null;
         loading = false;
       });
     } catch (e) {
       setState(() {
-        prices = fallbackPrices;
+        prices = [];
+        errorMessage =
+            "Could not reach the server. Check your connection and try again.";
         loading = false;
       });
     }
@@ -317,6 +330,32 @@ class _CropPriceScreenState extends State<CropPriceScreen> {
                 if (loading)
                   const CircularProgressIndicator(
                     color: Colors.green,
+                  ),
+
+                if (staleNote != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      staleNote!,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.orange.shade800,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+
+                if (errorMessage != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    child: Text(
+                      errorMessage!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.red,
+                        fontSize: 15,
+                      ),
+                    ),
                   ),
 
                 Expanded(

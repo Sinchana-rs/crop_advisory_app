@@ -38,7 +38,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => sensorError = "Waiting for ESP32 sensor data...");
+      setState(() => sensorError = "waiting");
     }
   }
 
@@ -195,23 +195,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           statCard("Rain",
                               sensor == null ? "--" : (sensor!.rain ? "DETECTED" : "NO RAIN"),
                               Icons.umbrella),
-                          statCard("NPK",
-                              sensor == null || !sensor!.npkValid ? "--" :
-                              "N ${sensor!.nitrogen.toStringAsFixed(0)} / P ${sensor!.phosphorus.toStringAsFixed(0)} / K ${sensor!.potassium.toStringAsFixed(0)}",
-                              Icons.science),
                           statCard("Pump",
                               sensor == null ? "--" : (sensor!.pumpOn ? "ON" : "OFF"),
                               Icons.water_drop),
                         ],
                       ),
-                      if (sensor != null && sensor!.npkProblem.isNotEmpty) ...[
-                        const SizedBox(height: 10),
-                        Text(sensor!.npkProblem,
-                            style: TextStyle(color: Colors.orange[800])),
-                      ],
                       if (sensorError.isNotEmpty) ...[
                         const SizedBox(height: 10),
-                        Text(sensorError, style: TextStyle(color: Colors.orange[800])),
+                        Text(LanguageService.t("waitingForSensor"), style: TextStyle(color: Colors.orange[800])),
                       ],
 
                       SizedBox(height: 25),

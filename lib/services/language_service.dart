@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class LanguageService {
   // ============================================================
@@ -11,14 +12,63 @@ class LanguageService {
   //
   static ValueNotifier<String> lang = ValueNotifier<String>("en");
 
+  static const String _prefsKey = "app_language";
+
+  static const List<String> supported = ["en", "kn", "hi"];
+
+  // ============================================================
+  // LOAD / SAVE (call once in main() before runApp)
+  // ============================================================
+  //
+  // The saved language is restored on every app start, and every
+  // later change to LanguageService.lang is saved automatically,
+  // so the language is never reset to English by a restart or by
+  // a screen that assigns lang.value directly.
+  //
+
+  static bool _initialised = false;
+
+  static Future<void> init() async {
+    if (_initialised) return;
+    _initialised = true;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_prefsKey);
+
+      if (saved != null && supported.contains(saved)) {
+        lang.value = saved;
+      }
+    } catch (e) {
+      debugPrint("LanguageService.init error: $e");
+    }
+
+    lang.addListener(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_prefsKey, lang.value);
+      } catch (e) {
+        debugPrint("LanguageService save error: $e");
+      }
+    });
+  }
+
   // ============================================================
   // VOICE LANGUAGE
   // ============================================================
 
-  static String voiceLang() {
-    if (lang.value == "kn") return "kn-IN";
-    if (lang.value == "hi") return "hi-IN";
+  static String voiceLang() => voiceLocaleFor(lang.value);
+
+  static String voiceLocaleFor(String code) {
+    if (code == "kn") return "kn-IN";
+    if (code == "hi") return "hi-IN";
     return "en-IN";
+  }
+
+  // "kn-IN" -> "kn"
+  static String codeFromLocale(String locale) {
+    final c = locale.toLowerCase().split(RegExp(r"[-_]")).first;
+    return supported.contains(c) ? c : "en";
   }
 
   // ============================================================
@@ -36,9 +86,7 @@ class LanguageService {
   // ============================================================
 
   static void changeLanguage(String language) {
-    if (language == "en" ||
-        language == "kn" ||
-        language == "hi") {
+    if (supported.contains(language)) {
       lang.value = language;
     }
   }
@@ -430,6 +478,168 @@ class LanguageService {
           "Check Irrigation",
       "askAssistant":
           "Ask Assistant",
+
+      // ----------------------------------------------------------
+      // IRRIGATION SCREEN
+      // ----------------------------------------------------------
+
+      "smartIrrigation": "Smart Irrigation",
+      "smartIrrigationSubtitle":
+          "Get an AI irrigation recommendation from your farm sensor data",
+      "farmSensorData": "Farm Sensor Data",
+      "enterSoilMoisture": "Enter soil moisture (%)",
+      "enterTemperature": "Enter temperature (°C)",
+      "enterHumidity": "Enter humidity (%)",
+      "aiRecommendation": "Get AI Recommendation",
+      "analyzing": "Analyzing...",
+      "aiIrrigationRecommendation": "AI Irrigation Recommendation",
+      "pleaseEnterAllValues": "Please enter all values",
+      "pleaseEnterValidValues": "Please enter valid numeric values",
+      "unableToConnect": "Unable to connect to the server",
+      "serverError": "Server Error",
+      "irrigationInfo":
+          "Recommendations are based on soil moisture, temperature and humidity. Always check your field before starting the pump.",
+      "pumpState_ON": "ON",
+      "pumpState_OFF": "OFF",
+      "pumpState_OPTIONAL": "OPTIONAL",
+      "irr_critical_rec": "Irrigation is highly required.",
+      "irr_critical_msg":
+          "The soil is very dry. Start irrigation immediately.",
+      "irr_low_rec": "Irrigation is recommended.",
+      "irr_low_msg":
+          "The soil moisture is low. Provide irrigation to the crop.",
+      "irr_moderate_rec": "Moderate irrigation may be required.",
+      "irr_moderate_msg":
+          "The soil has moderate moisture. Monitor the soil and irrigate if required.",
+      "irr_sufficient_rec": "Irrigation is not required.",
+      "irr_sufficient_msg":
+          "The soil has sufficient moisture. Irrigation can remain OFF.",
+
+      // ----------------------------------------------------------
+      // VOICE SCREEN
+      // ----------------------------------------------------------
+
+      "voiceSubtitle":
+          "Ask any farming question and listen to the answer",
+      "tapMicrophone": "Tap the microphone to speak",
+      "questionPlaceholder": "Your question will appear here",
+      "answerPlaceholder": "The answer will appear here",
+      "thinking": "Thinking...",
+      "aiSpeaking": "AI is speaking...",
+      "smartFarming": "Smart farming with AgriSense AI",
+      "speechNotAvailable":
+          "Speech recognition is not available on this device",
+      "connectionError":
+          "Cannot connect to the server. Please check your connection.",
+      "audioUnavailable":
+          "The recommendation is shown on screen, but audio could not be played.",
+      "audioPreparing": "Preparing audio...",
+      "quotaReached":
+          "The AI service has reached its quota. Please try again later.",
+      "apiKeyProblem":
+          "There is a problem with the AI service configuration.",
+      "voiceNoAnswer":
+          "Sorry, I could not generate an answer. Please try again.",
+
+      // ----------------------------------------------------------
+      // CROP PRICE SCREEN
+      // ----------------------------------------------------------
+
+      "commodityCrop": "Crop / Commodity",
+      "state": "State",
+      "district": "District",
+      "date": "Date",
+      "minPrice": "Min Price",
+      "maxPrice": "Max Price",
+      "getCurrentPrices": "Get Current Prices",
+      "livePricesNote":
+          "Prices are fetched live from the government market data source.",
+
+      // ----------------------------------------------------------
+      // PROFILE SCREEN
+      // ----------------------------------------------------------
+
+      "editModeEnabled": "Edit mode enabled",
+      "noEmail": "No email",
+      "profileSaved": "Profile saved successfully",
+
+      // ----------------------------------------------------------
+      // LOGIN / SPLASH
+      // ----------------------------------------------------------
+
+      "appTagline": "Multi-Agent Crop Advisory System",
+      "pleaseEnterEmail": "Please enter your email address.",
+      "pleaseEnterPassword": "Please enter your password.",
+      "pleaseEnterValidEmail": "Please enter a valid email address.",
+      "authInvalidCredential":
+          "No account found with this email or the password is incorrect.",
+      "authWrongPassword": "Incorrect password. Please try again.",
+      "authUserDisabled": "This account has been disabled.",
+      "authTooManyRequests":
+          "Too many login attempts. Please try again later.",
+      "authNetworkError":
+          "Network error. Please check your internet connection.",
+      "authLoginFailedGeneric":
+          "Login failed. Please check your email and password.",
+      "somethingWentWrongTryAgain":
+          "Something went wrong. Please try again.",
+      "pleaseEnterNewPassword": "Please enter a password.",
+      "passwordMin6":
+          "Password must contain at least 6 characters.",
+      "accountCreatedLogin":
+          "Account created successfully. You can now login.",
+      "authEmailInUse":
+          "An account already exists with this email. Please login.",
+      "authWeakPassword":
+          "Password is too weak. Use at least 6 characters.",
+      "authOperationNotAllowed":
+          "Email/password registration is not enabled.",
+      "authRegisterFailedGeneric":
+          "Registration failed. Please try again.",
+      "enterRegisteredEmail":
+          "Please enter your registered email first.",
+      "resetEmailSentTo": "Password reset email sent to",
+      "authNoAccountEmail":
+          "No account is registered with this email.",
+      "authUnableSendReset": "Unable to send password reset email.",
+      "sensorServerError": "Sensor server error",
+      "sensorUnavailable": "Sensor data unavailable",
+      // ----------------------------------------------------------
+      // LOGIN / REGISTER + SENSOR WAIT (added)
+      // ----------------------------------------------------------
+
+      "auth_enter_email": "Please enter your email address.",
+      "auth_enter_password": "Please enter your password.",
+      "auth_enter_new_password": "Please enter a password.",
+      "auth_valid_email": "Please enter a valid email address.",
+      "auth_bad_credentials": "No account found with this email or the password is incorrect.",
+      "auth_wrong_password": "Incorrect password. Please try again.",
+      "auth_user_disabled": "This account has been disabled.",
+      "auth_too_many": "Too many login attempts. Please try again later.",
+      "auth_network": "Network error. Please check your internet connection.",
+      "auth_login_failed": "Login failed. Please check your email and password.",
+      "auth_generic": "Something went wrong. Please try again.",
+      "auth_password_min6": "Password must contain at least 6 characters.",
+      "auth_account_created": "Account created successfully. You can now login.",
+      "auth_email_in_use": "An account already exists with this email. Please login.",
+      "auth_weak_password": "Password is too weak. Use at least 6 characters.",
+      "auth_op_not_allowed": "Email/password registration is not enabled in Firebase.",
+      "auth_register_failed": "Registration failed. Please try again.",
+      "auth_enter_registered_email": "Please enter your registered email first.",
+      "auth_reset_sent": "Password reset email sent to {email}",
+      "auth_no_account": "No account is registered with this email.",
+      "auth_reset_failed": "Unable to send password reset email.",
+      "auth_email_hint": "Email ID",
+      "auth_password_hint": "Password",
+      "auth_login": "Login",
+      "auth_forgot": "Forgot Password?",
+      "auth_register_prompt": "Don't have an account? Register",
+      "waitingForSensor": "Waiting for ESP32 sensor data...",
+
+      // Pump status labels (added)
+      "pump_ON": "ON",
+      "pump_OFF": "OFF",
+      "pump_OPTIONAL": "OPTIONAL",
     },
 
     // ============================================================
@@ -894,6 +1104,171 @@ class LanguageService {
           "ನೀರಾವರಿ ಪರಿಶೀಲಿಸಿ",
       "askAssistant":
           "ಸಹಾಯಕರನ್ನು ಕೇಳಿ",
+
+      // ----------------------------------------------------------
+      // IRRIGATION SCREEN
+      // ----------------------------------------------------------
+
+      "smartIrrigation": "ಸ್ಮಾರ್ಟ್ ನೀರಾವರಿ",
+      "smartIrrigationSubtitle":
+          "ನಿಮ್ಮ ಹೊಲದ ಸೆನ್ಸರ್ ಮಾಹಿತಿಯಿಂದ ಎಐ ನೀರಾವರಿ ಶಿಫಾರಸು ಪಡೆಯಿರಿ",
+      "farmSensorData": "ಹೊಲದ ಸೆನ್ಸರ್ ಮಾಹಿತಿ",
+      "enterSoilMoisture": "ಮಣ್ಣಿನ ತೇವಾಂಶ (%) ನಮೂದಿಸಿ",
+      "enterTemperature": "ತಾಪಮಾನ (°C) ನಮೂದಿಸಿ",
+      "enterHumidity": "ಆರ್ದ್ರತೆ (%) ನಮೂದಿಸಿ",
+      "aiRecommendation": "ಎಐ ಶಿಫಾರಸು ಪಡೆಯಿರಿ",
+      "analyzing": "ವಿಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ...",
+      "aiIrrigationRecommendation": "ಎಐ ನೀರಾವರಿ ಶಿಫಾರಸು",
+      "pleaseEnterAllValues": "ದಯವಿಟ್ಟು ಎಲ್ಲಾ ಮೌಲ್ಯಗಳನ್ನು ನಮೂದಿಸಿ",
+      "pleaseEnterValidValues":
+          "ದಯವಿಟ್ಟು ಸರಿಯಾದ ಸಂಖ್ಯೆಯ ಮೌಲ್ಯಗಳನ್ನು ನಮೂದಿಸಿ",
+      "unableToConnect": "ಸರ್ವರ್‌ಗೆ ಸಂಪರ್ಕಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ",
+      "serverError": "ಸರ್ವರ್ ದೋಷ",
+      "irrigationInfo":
+          "ಶಿಫಾರಸುಗಳು ಮಣ್ಣಿನ ತೇವಾಂಶ, ತಾಪಮಾನ ಮತ್ತು ಆರ್ದ್ರತೆಯನ್ನು ಆಧರಿಸಿವೆ. ಪಂಪ್ ಪ್ರಾರಂಭಿಸುವ ಮೊದಲು ನಿಮ್ಮ ಹೊಲವನ್ನು ಪರಿಶೀಲಿಸಿ.",
+      "pumpState_ON": "ಆನ್",
+      "pumpState_OFF": "ಆಫ್",
+      "pumpState_OPTIONAL": "ಐಚ್ಛಿಕ",
+      "irr_critical_rec": "ನೀರಾವರಿ ತುಂಬಾ ಅಗತ್ಯವಿದೆ.",
+      "irr_critical_msg":
+          "ಮಣ್ಣು ತುಂಬಾ ಒಣಗಿದೆ. ತಕ್ಷಣ ನೀರಾವರಿ ಪ್ರಾರಂಭಿಸಿ.",
+      "irr_low_rec": "ನೀರಾವರಿ ಮಾಡಲು ಶಿಫಾರಸು ಮಾಡಲಾಗಿದೆ.",
+      "irr_low_msg":
+          "ಮಣ್ಣಿನ ತೇವಾಂಶ ಕಡಿಮೆಯಿದೆ. ಬೆಳೆಗೆ ನೀರು ಒದಗಿಸಿ.",
+      "irr_moderate_rec": "ಸ್ವಲ್ಪ ನೀರಾವರಿ ಬೇಕಾಗಬಹುದು.",
+      "irr_moderate_msg":
+          "ಮಣ್ಣಿನಲ್ಲಿ ಮಧ್ಯಮ ತೇವಾಂಶವಿದೆ. ಮಣ್ಣನ್ನು ಗಮನಿಸಿ, ಅಗತ್ಯವಿದ್ದರೆ ನೀರು ಹಾಕಿ.",
+      "irr_sufficient_rec": "ನೀರಾವರಿ ಅಗತ್ಯವಿಲ್ಲ.",
+      "irr_sufficient_msg":
+          "ಮಣ್ಣಿನಲ್ಲಿ ಸಾಕಷ್ಟು ತೇವಾಂಶವಿದೆ. ನೀರಾವರಿ ಆಫ್ ಆಗಿರಬಹುದು.",
+
+      // ----------------------------------------------------------
+      // VOICE SCREEN
+      // ----------------------------------------------------------
+
+      "voiceSubtitle":
+          "ಯಾವುದೇ ಕೃಷಿ ಪ್ರಶ್ನೆ ಕೇಳಿ ಮತ್ತು ಉತ್ತರವನ್ನು ಆಲಿಸಿ",
+      "tapMicrophone": "ಮಾತನಾಡಲು ಮೈಕ್ರೋಫೋನ್ ಒತ್ತಿ",
+      "questionPlaceholder": "ನಿಮ್ಮ ಪ್ರಶ್ನೆ ಇಲ್ಲಿ ಕಾಣಿಸುತ್ತದೆ",
+      "answerPlaceholder": "ಉತ್ತರ ಇಲ್ಲಿ ಕಾಣಿಸುತ್ತದೆ",
+      "thinking": "ಯೋಚಿಸಲಾಗುತ್ತಿದೆ...",
+      "aiSpeaking": "ಎಐ ಮಾತನಾಡುತ್ತಿದೆ...",
+      "smartFarming": "ಅಗ್ರಿಸೆನ್ಸ್ ಎಐ ಜೊತೆ ಸ್ಮಾರ್ಟ್ ಕೃಷಿ",
+      "speechNotAvailable":
+          "ಈ ಸಾಧನದಲ್ಲಿ ಧ್ವನಿ ಗುರುತಿಸುವಿಕೆ ಲಭ್ಯವಿಲ್ಲ",
+      "connectionError":
+          "ಸರ್ವರ್‌ಗೆ ಸಂಪರ್ಕಿಸಲು ಸಾಧ್ಯವಾಗುತ್ತಿಲ್ಲ. ನಿಮ್ಮ ಸಂಪರ್ಕವನ್ನು ಪರಿಶೀಲಿಸಿ.",
+      "audioUnavailable":
+          "ಶಿಫಾರಸು ಪರದೆಯಲ್ಲಿ ಕಾಣಿಸುತ್ತಿದೆ, ಆದರೆ ಆಡಿಯೋ ಪ್ಲೇ ಮಾಡಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+      "audioPreparing": "ಆಡಿಯೋ ಸಿದ್ಧಪಡಿಸಲಾಗುತ್ತಿದೆ...",
+      "quotaReached":
+          "ಎಐ ಸೇವೆಯ ಮಿತಿ ಮುಗಿದಿದೆ. ದಯವಿಟ್ಟು ನಂತರ ಪ್ರಯತ್ನಿಸಿ.",
+      "apiKeyProblem": "ಎಐ ಸೇವೆಯ ಸಂರಚನೆಯಲ್ಲಿ ಸಮಸ್ಯೆ ಇದೆ.",
+      "voiceNoAnswer":
+          "ಕ್ಷಮಿಸಿ, ಉತ್ತರ ರಚಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+
+      // ----------------------------------------------------------
+      // CROP PRICE SCREEN
+      // ----------------------------------------------------------
+
+      "commodityCrop": "ಬೆಳೆ / ಸರಕು",
+      "state": "ರಾಜ್ಯ",
+      "district": "ಜಿಲ್ಲೆ",
+      "date": "ದಿನಾಂಕ",
+      "minPrice": "ಕನಿಷ್ಠ ಬೆಲೆ",
+      "maxPrice": "ಗರಿಷ್ಠ ಬೆಲೆ",
+      "getCurrentPrices": "ಪ್ರಸ್ತುತ ಬೆಲೆಗಳನ್ನು ಪಡೆಯಿರಿ",
+      "livePricesNote":
+          "ಬೆಲೆಗಳನ್ನು ಸರ್ಕಾರಿ ಮಾರುಕಟ್ಟೆ ಡೇಟಾ ಮೂಲದಿಂದ ನೇರವಾಗಿ ಪಡೆಯಲಾಗುತ್ತದೆ.",
+
+      // ----------------------------------------------------------
+      // PROFILE SCREEN
+      // ----------------------------------------------------------
+
+      "editModeEnabled": "ತಿದ್ದುಪಡಿ ಮೋಡ್ ಸಕ್ರಿಯವಾಗಿದೆ",
+      "noEmail": "ಇಮೇಲ್ ಇಲ್ಲ",
+      "profileSaved": "ಪ್ರೊಫೈಲ್ ಯಶಸ್ವಿಯಾಗಿ ಉಳಿಸಲಾಗಿದೆ",
+
+      // ----------------------------------------------------------
+      // LOGIN / SPLASH
+      // ----------------------------------------------------------
+
+      "appTagline": "ಬಹು-ಏಜೆಂಟ್ ಬೆಳೆ ಸಲಹಾ ವ್ಯವಸ್ಥೆ",
+      "pleaseEnterEmail": "ದಯವಿಟ್ಟು ನಿಮ್ಮ ಇಮೇಲ್ ವಿಳಾಸವನ್ನು ನಮೂದಿಸಿ.",
+      "pleaseEnterPassword": "ದಯವಿಟ್ಟು ನಿಮ್ಮ ಪಾಸ್‌ವರ್ಡ್ ನಮೂದಿಸಿ.",
+      "pleaseEnterValidEmail":
+          "ದಯವಿಟ್ಟು ಸರಿಯಾದ ಇಮೇಲ್ ವಿಳಾಸವನ್ನು ನಮೂದಿಸಿ.",
+      "authInvalidCredential":
+          "ಈ ಇಮೇಲ್‌ನೊಂದಿಗೆ ಖಾತೆ ಸಿಗಲಿಲ್ಲ ಅಥವಾ ಪಾಸ್‌ವರ್ಡ್ ತಪ್ಪಾಗಿದೆ.",
+      "authWrongPassword":
+          "ಪಾಸ್‌ವರ್ಡ್ ತಪ್ಪಾಗಿದೆ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+      "authUserDisabled": "ಈ ಖಾತೆಯನ್ನು ನಿಷ್ಕ್ರಿಯಗೊಳಿಸಲಾಗಿದೆ.",
+      "authTooManyRequests":
+          "ಹಲವು ಲಾಗಿನ್ ಪ್ರಯತ್ನಗಳು. ದಯವಿಟ್ಟು ನಂತರ ಪ್ರಯತ್ನಿಸಿ.",
+      "authNetworkError":
+          "ನೆಟ್‌ವರ್ಕ್ ದೋಷ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಇಂಟರ್ನೆಟ್ ಸಂಪರ್ಕವನ್ನು ಪರಿಶೀಲಿಸಿ.",
+      "authLoginFailedGeneric":
+          "ಲಾಗಿನ್ ವಿಫಲವಾಗಿದೆ. ನಿಮ್ಮ ಇಮೇಲ್ ಮತ್ತು ಪಾಸ್‌ವರ್ಡ್ ಪರಿಶೀಲಿಸಿ.",
+      "somethingWentWrongTryAgain":
+          "ಏನೋ ತಪ್ಪಾಗಿದೆ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+      "pleaseEnterNewPassword": "ದಯವಿಟ್ಟು ಪಾಸ್‌ವರ್ಡ್ ನಮೂದಿಸಿ.",
+      "passwordMin6":
+          "ಪಾಸ್‌ವರ್ಡ್ ಕನಿಷ್ಠ 6 ಅಕ್ಷರಗಳನ್ನು ಹೊಂದಿರಬೇಕು.",
+      "accountCreatedLogin":
+          "ಖಾತೆಯನ್ನು ಯಶಸ್ವಿಯಾಗಿ ರಚಿಸಲಾಗಿದೆ. ಈಗ ಲಾಗಿನ್ ಮಾಡಬಹುದು.",
+      "authEmailInUse":
+          "ಈ ಇಮೇಲ್‌ನೊಂದಿಗೆ ಈಗಾಗಲೇ ಖಾತೆ ಇದೆ. ದಯವಿಟ್ಟು ಲಾಗಿನ್ ಮಾಡಿ.",
+      "authWeakPassword":
+          "ಪಾಸ್‌ವರ್ಡ್ ದುರ್ಬಲವಾಗಿದೆ. ಕನಿಷ್ಠ 6 ಅಕ್ಷರಗಳನ್ನು ಬಳಸಿ.",
+      "authOperationNotAllowed":
+          "ಇಮೇಲ್/ಪಾಸ್‌ವರ್ಡ್ ನೋಂದಣಿ ಸಕ್ರಿಯವಾಗಿಲ್ಲ.",
+      "authRegisterFailedGeneric":
+          "ನೋಂದಣಿ ವಿಫಲವಾಗಿದೆ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+      "enterRegisteredEmail":
+          "ದಯವಿಟ್ಟು ಮೊದಲು ನೋಂದಾಯಿತ ಇಮೇಲ್ ನಮೂದಿಸಿ.",
+      "resetEmailSentTo": "ಪಾಸ್‌ವರ್ಡ್ ಮರುಹೊಂದಿಸುವ ಇಮೇಲ್ ಕಳುಹಿಸಲಾಗಿದೆ:",
+      "authNoAccountEmail":
+          "ಈ ಇಮೇಲ್‌ನೊಂದಿಗೆ ಯಾವುದೇ ಖಾತೆ ನೋಂದಾಯಿಸಲಾಗಿಲ್ಲ.",
+      "authUnableSendReset":
+          "ಪಾಸ್‌ವರ್ಡ್ ಮರುಹೊಂದಿಸುವ ಇಮೇಲ್ ಕಳುಹಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+      "sensorServerError": "ಸೆನ್ಸರ್ ಸರ್ವರ್ ದೋಷ",
+      "sensorUnavailable": "ಸೆನ್ಸರ್ ಮಾಹಿತಿ ಲಭ್ಯವಿಲ್ಲ",
+      // ----------------------------------------------------------
+      // LOGIN / REGISTER + SENSOR WAIT (added)
+      // ----------------------------------------------------------
+
+      "auth_enter_email": "ದಯವಿಟ್ಟು ನಿಮ್ಮ ಇಮೇಲ್ ವಿಳಾಸವನ್ನು ನಮೂದಿಸಿ.",
+      "auth_enter_password": "ದಯವಿಟ್ಟು ನಿಮ್ಮ ಪಾಸ್‌ವರ್ಡ್ ನಮೂದಿಸಿ.",
+      "auth_enter_new_password": "ದಯವಿಟ್ಟು ಪಾಸ್‌ವರ್ಡ್ ನಮೂದಿಸಿ.",
+      "auth_valid_email": "ದಯವಿಟ್ಟು ಮಾನ್ಯವಾದ ಇಮೇಲ್ ವಿಳಾಸವನ್ನು ನಮೂದಿಸಿ.",
+      "auth_bad_credentials": "ಈ ಇಮೇಲ್‌ನೊಂದಿಗೆ ಯಾವುದೇ ಖಾತೆ ಕಂಡುಬಂದಿಲ್ಲ ಅಥವಾ ಪಾಸ್‌ವರ್ಡ್ ತಪ್ಪಾಗಿದೆ.",
+      "auth_wrong_password": "ಪಾಸ್‌ವರ್ಡ್ ತಪ್ಪಾಗಿದೆ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+      "auth_user_disabled": "ಈ ಖಾತೆಯನ್ನು ನಿಷ್ಕ್ರಿಯಗೊಳಿಸಲಾಗಿದೆ.",
+      "auth_too_many": "ಹಲವು ಬಾರಿ ಲಾಗಿನ್ ಪ್ರಯತ್ನಿಸಲಾಗಿದೆ. ದಯವಿಟ್ಟು ನಂತರ ಪ್ರಯತ್ನಿಸಿ.",
+      "auth_network": "ನೆಟ್‌ವರ್ಕ್ ದೋಷ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಇಂಟರ್ನೆಟ್ ಸಂಪರ್ಕವನ್ನು ಪರಿಶೀಲಿಸಿ.",
+      "auth_login_failed": "ಲಾಗಿನ್ ವಿಫಲವಾಗಿದೆ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಇಮೇಲ್ ಮತ್ತು ಪಾಸ್‌ವರ್ಡ್ ಪರಿಶೀಲಿಸಿ.",
+      "auth_generic": "ಏನೋ ತಪ್ಪಾಗಿದೆ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+      "auth_password_min6": "ಪಾಸ್‌ವರ್ಡ್ ಕನಿಷ್ಠ 6 ಅಕ್ಷರಗಳನ್ನು ಹೊಂದಿರಬೇಕು.",
+      "auth_account_created": "ಖಾತೆಯನ್ನು ಯಶಸ್ವಿಯಾಗಿ ರಚಿಸಲಾಗಿದೆ. ಈಗ ನೀವು ಲಾಗಿನ್ ಮಾಡಬಹುದು.",
+      "auth_email_in_use": "ಈ ಇಮೇಲ್‌ನೊಂದಿಗೆ ಈಗಾಗಲೇ ಖಾತೆ ಇದೆ. ದಯವಿಟ್ಟು ಲಾಗಿನ್ ಮಾಡಿ.",
+      "auth_weak_password": "ಪಾಸ್‌ವರ್ಡ್ ತುಂಬಾ ದುರ್ಬಲವಾಗಿದೆ. ಕನಿಷ್ಠ 6 ಅಕ್ಷರಗಳನ್ನು ಬಳಸಿ.",
+      "auth_op_not_allowed": "ಇಮೇಲ್/ಪಾಸ್‌ವರ್ಡ್ ನೋಂದಣಿಯನ್ನು Firebase ನಲ್ಲಿ ಸಕ್ರಿಯಗೊಳಿಸಲಾಗಿಲ್ಲ.",
+      "auth_register_failed": "ನೋಂದಣಿ ವಿಫಲವಾಗಿದೆ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+      "auth_enter_registered_email": "ದಯವಿಟ್ಟು ಮೊದಲು ನೋಂದಾಯಿತ ಇಮೇಲ್ ನಮೂದಿಸಿ.",
+      "auth_reset_sent": "{email} ಗೆ ಪಾಸ್‌ವರ್ಡ್ ಮರುಹೊಂದಿಸುವ ಇಮೇಲ್ ಕಳುಹಿಸಲಾಗಿದೆ",
+      "auth_no_account": "ಈ ಇಮೇಲ್‌ನೊಂದಿಗೆ ಯಾವುದೇ ಖಾತೆ ನೋಂದಾಯಿಸಲಾಗಿಲ್ಲ.",
+      "auth_reset_failed": "ಪಾಸ್‌ವರ್ಡ್ ಮರುಹೊಂದಿಸುವ ಇಮೇಲ್ ಕಳುಹಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+      "auth_email_hint": "ಇಮೇಲ್ ಐಡಿ",
+      "auth_password_hint": "ಪಾಸ್‌ವರ್ಡ್",
+      "auth_login": "ಲಾಗಿನ್",
+      "auth_forgot": "ಪಾಸ್‌ವರ್ಡ್ ಮರೆತಿರಾ?",
+      "auth_register_prompt": "ಖಾತೆ ಇಲ್ಲವೇ? ನೋಂದಣಿ ಮಾಡಿ",
+      "waitingForSensor": "ESP32 ಸೆನ್ಸರ್ ಡೇಟಾಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ...",
+
+      // Pump status labels (added)
+      "pump_ON": "ಆನ್",
+      "pump_OFF": "ಆಫ್",
+      "pump_OPTIONAL": "ಐಚ್ಛಿಕ",
     },
 
     // ============================================================
@@ -1358,6 +1733,168 @@ class LanguageService {
           "सिंचाई की जांच करें",
       "askAssistant":
           "सहायक से पूछें",
+
+      // ----------------------------------------------------------
+      // IRRIGATION SCREEN
+      // ----------------------------------------------------------
+
+      "smartIrrigation": "स्मार्ट सिंचाई",
+      "smartIrrigationSubtitle":
+          "अपने खेत के सेंसर डेटा से एआई सिंचाई सिफारिश पाएं",
+      "farmSensorData": "खेत का सेंसर डेटा",
+      "enterSoilMoisture": "मिट्टी की नमी (%) दर्ज करें",
+      "enterTemperature": "तापमान (°C) दर्ज करें",
+      "enterHumidity": "आर्द्रता (%) दर्ज करें",
+      "aiRecommendation": "एआई सिफारिश पाएं",
+      "analyzing": "विश्लेषण हो रहा है...",
+      "aiIrrigationRecommendation": "एआई सिंचाई सिफारिश",
+      "pleaseEnterAllValues": "कृपया सभी मान दर्ज करें",
+      "pleaseEnterValidValues": "कृपया सही संख्यात्मक मान दर्ज करें",
+      "unableToConnect": "सर्वर से कनेक्ट नहीं हो सका",
+      "serverError": "सर्वर त्रुटि",
+      "irrigationInfo":
+          "सिफारिशें मिट्टी की नमी, तापमान और आर्द्रता पर आधारित हैं। पंप चालू करने से पहले अपना खेत जरूर जांचें।",
+      "pumpState_ON": "चालू",
+      "pumpState_OFF": "बंद",
+      "pumpState_OPTIONAL": "वैकल्पिक",
+      "irr_critical_rec": "सिंचाई की बहुत आवश्यकता है।",
+      "irr_critical_msg":
+          "मिट्टी बहुत सूखी है। तुरंत सिंचाई शुरू करें।",
+      "irr_low_rec": "सिंचाई करने की सिफारिश की जाती है।",
+      "irr_low_msg":
+          "मिट्टी में नमी कम है। फसल को पानी दें।",
+      "irr_moderate_rec": "थोड़ी सिंचाई की आवश्यकता हो सकती है।",
+      "irr_moderate_msg":
+          "मिट्टी में मध्यम नमी है। मिट्टी पर नज़र रखें और जरूरत हो तो सिंचाई करें।",
+      "irr_sufficient_rec": "सिंचाई की आवश्यकता नहीं है।",
+      "irr_sufficient_msg":
+          "मिट्टी में पर्याप्त नमी है। सिंचाई बंद रह सकती है।",
+
+      // ----------------------------------------------------------
+      // VOICE SCREEN
+      // ----------------------------------------------------------
+
+      "voiceSubtitle":
+          "कोई भी खेती का सवाल पूछें और जवाब सुनें",
+      "tapMicrophone": "बोलने के लिए माइक्रोफोन दबाएं",
+      "questionPlaceholder": "आपका सवाल यहाँ दिखाई देगा",
+      "answerPlaceholder": "जवाब यहाँ दिखाई देगा",
+      "thinking": "सोच रहा है...",
+      "aiSpeaking": "एआई बोल रहा है...",
+      "smartFarming": "एग्रीसेंस एआई के साथ स्मार्ट खेती",
+      "speechNotAvailable":
+          "इस डिवाइस पर आवाज़ पहचान उपलब्ध नहीं है",
+      "connectionError":
+          "सर्वर से कनेक्ट नहीं हो पा रहा है। कृपया अपना कनेक्शन जांचें।",
+      "audioUnavailable":
+          "सिफारिश स्क्रीन पर दिखाई गई है, लेकिन ऑडियो नहीं चल सका।",
+      "audioPreparing": "ऑडियो तैयार हो रहा है...",
+      "quotaReached":
+          "एआई सेवा की सीमा पूरी हो गई है। कृपया बाद में प्रयास करें।",
+      "apiKeyProblem": "एआई सेवा के कॉन्फ़िगरेशन में समस्या है।",
+      "voiceNoAnswer":
+          "क्षमा करें, जवाब नहीं बन सका। कृपया फिर से प्रयास करें।",
+
+      // ----------------------------------------------------------
+      // CROP PRICE SCREEN
+      // ----------------------------------------------------------
+
+      "commodityCrop": "फसल / वस्तु",
+      "state": "राज्य",
+      "district": "जिला",
+      "date": "तारीख",
+      "minPrice": "न्यूनतम कीमत",
+      "maxPrice": "अधिकतम कीमत",
+      "getCurrentPrices": "वर्तमान कीमतें देखें",
+      "livePricesNote":
+          "कीमतें सरकारी मंडी डेटा स्रोत से सीधे ली जाती हैं।",
+
+      // ----------------------------------------------------------
+      // PROFILE SCREEN
+      // ----------------------------------------------------------
+
+      "editModeEnabled": "संपादन मोड चालू है",
+      "noEmail": "कोई ईमेल नहीं",
+      "profileSaved": "प्रोफाइल सफलतापूर्वक सहेजी गई",
+
+      // ----------------------------------------------------------
+      // LOGIN / SPLASH
+      // ----------------------------------------------------------
+
+      "appTagline": "मल्टी-एजेंट फसल सलाहकार प्रणाली",
+      "pleaseEnterEmail": "कृपया अपना ईमेल पता दर्ज करें।",
+      "pleaseEnterPassword": "कृपया अपना पासवर्ड दर्ज करें।",
+      "pleaseEnterValidEmail": "कृपया सही ईमेल पता दर्ज करें।",
+      "authInvalidCredential":
+          "इस ईमेल से कोई खाता नहीं मिला या पासवर्ड गलत है।",
+      "authWrongPassword": "पासवर्ड गलत है। कृपया फिर से प्रयास करें।",
+      "authUserDisabled": "यह खाता बंद कर दिया गया है।",
+      "authTooManyRequests":
+          "बहुत अधिक लॉगिन प्रयास। कृपया बाद में प्रयास करें।",
+      "authNetworkError":
+          "नेटवर्क त्रुटि। कृपया अपना इंटरनेट कनेक्शन जांचें।",
+      "authLoginFailedGeneric":
+          "लॉगिन विफल हुआ। कृपया अपना ईमेल और पासवर्ड जांचें।",
+      "somethingWentWrongTryAgain":
+          "कुछ गलत हो गया। कृपया फिर से प्रयास करें।",
+      "pleaseEnterNewPassword": "कृपया पासवर्ड दर्ज करें।",
+      "passwordMin6":
+          "पासवर्ड में कम से कम 6 अक्षर होने चाहिए।",
+      "accountCreatedLogin":
+          "खाता सफलतापूर्वक बन गया। अब आप लॉगिन कर सकते हैं।",
+      "authEmailInUse":
+          "इस ईमेल से पहले से खाता मौजूद है। कृपया लॉगिन करें।",
+      "authWeakPassword":
+          "पासवर्ड कमज़ोर है। कम से कम 6 अक्षरों का उपयोग करें।",
+      "authOperationNotAllowed":
+          "ईमेल/पासवर्ड रजिस्ट्रेशन चालू नहीं है।",
+      "authRegisterFailedGeneric":
+          "रजिस्ट्रेशन विफल हुआ। कृपया फिर से प्रयास करें।",
+      "enterRegisteredEmail":
+          "कृपया पहले अपना पंजीकृत ईमेल दर्ज करें।",
+      "resetEmailSentTo": "पासवर्ड रीसेट ईमेल भेजा गया:",
+      "authNoAccountEmail":
+          "इस ईमेल से कोई खाता पंजीकृत नहीं है।",
+      "authUnableSendReset":
+          "पासवर्ड रीसेट ईमेल नहीं भेजा जा सका।",
+      "sensorServerError": "सेंसर सर्वर त्रुटि",
+      "sensorUnavailable": "सेंसर डेटा उपलब्ध नहीं है",
+      // ----------------------------------------------------------
+      // LOGIN / REGISTER + SENSOR WAIT (added)
+      // ----------------------------------------------------------
+
+      "auth_enter_email": "कृपया अपना ईमेल पता दर्ज करें।",
+      "auth_enter_password": "कृपया अपना पासवर्ड दर्ज करें।",
+      "auth_enter_new_password": "कृपया पासवर्ड दर्ज करें।",
+      "auth_valid_email": "कृपया मान्य ईमेल पता दर्ज करें।",
+      "auth_bad_credentials": "इस ईमेल से कोई खाता नहीं मिला या पासवर्ड गलत है।",
+      "auth_wrong_password": "पासवर्ड गलत है। कृपया फिर से प्रयास करें।",
+      "auth_user_disabled": "यह खाता अक्षम कर दिया गया है।",
+      "auth_too_many": "लॉगिन के बहुत अधिक प्रयास हुए। कृपया बाद में पुनः प्रयास करें।",
+      "auth_network": "नेटवर्क त्रुटि। कृपया अपना इंटरनेट कनेक्शन जांचें।",
+      "auth_login_failed": "लॉगिन विफल रहा। कृपया अपना ईमेल और पासवर्ड जांचें।",
+      "auth_generic": "कुछ गलत हो गया। कृपया फिर से प्रयास करें।",
+      "auth_password_min6": "पासवर्ड में कम से कम 6 अक्षर होने चाहिए।",
+      "auth_account_created": "खाता सफलतापूर्वक बन गया। अब आप लॉगिन कर सकते हैं।",
+      "auth_email_in_use": "इस ईमेल से पहले से खाता मौजूद है। कृपया लॉगिन करें।",
+      "auth_weak_password": "पासवर्ड बहुत कमजोर है। कम से कम 6 अक्षर उपयोग करें।",
+      "auth_op_not_allowed": "Firebase में ईमेल/पासवर्ड पंजीकरण सक्षम नहीं है।",
+      "auth_register_failed": "पंजीकरण विफल रहा। कृपया फिर से प्रयास करें।",
+      "auth_enter_registered_email": "कृपया पहले अपना पंजीकृत ईमेल दर्ज करें।",
+      "auth_reset_sent": "पासवर्ड रीसेट ईमेल {email} पर भेज दिया गया है",
+      "auth_no_account": "इस ईमेल से कोई खाता पंजीकृत नहीं है।",
+      "auth_reset_failed": "पासवर्ड रीसेट ईमेल भेजा नहीं जा सका।",
+      "auth_email_hint": "ईमेल आईडी",
+      "auth_password_hint": "पासवर्ड",
+      "auth_login": "लॉगिन",
+      "auth_forgot": "पासवर्ड भूल गए?",
+      "auth_register_prompt": "खाता नहीं है? रजिस्टर करें",
+      "waitingForSensor": "ESP32 सेंसर डेटा की प्रतीक्षा है...",
+
+      // Pump status labels (added)
+      "pump_ON": "चालू",
+      "pump_OFF": "बंद",
+      "pump_OPTIONAL": "वैकल्पिक",
     },
   };
 }

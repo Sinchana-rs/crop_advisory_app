@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 from dotenv import load_dotenv
-import math
 import os
 import time
 
@@ -44,13 +43,222 @@ else:
     print("Gemini API key loaded successfully.")
     print("======================================")
 
+    from google.genai import types as genai_types
+
+    # 45 second limit per Gemini request, so a slow model can never
+    # freeze the app; the next fallback model is tried instead.
     client = genai.Client(
-        api_key=GEMINI_API_KEY
+        api_key=GEMINI_API_KEY,
+        http_options=genai_types.HttpOptions(timeout=45000),
     )
 
 
 # Gemini model
 MODEL_NAME = "gemini-2.5-flash"
+
+# Gemini keeps a separate quota for every model. When the main model
+# has used up its quota (429) or no longer exists (404), the next
+# model in this list is tried automatically. The model that worked
+# last is tried first on the next request.
+FALLBACK_MODELS = [
+    "gemini-flash-lite-latest",
+    "gemini-flash-latest",
+]
+
+_active_model = MODEL_NAME
+
+
+def _gemini_generate(contents):
+    global _active_model
+
+    order = [_active_model] + [
+        m for m in [MODEL_NAME] + FALLBACK_MODELS if m != _active_model
+    ]
+
+    first_error = None
+
+    for model in order:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+            )
+
+            if model != _active_model:
+                print(f"Gemini model switched to: {model}")
+                _active_model = model
+
+            return response
+
+        except Exception as e:
+            text = str(e)
+
+            retryable = any(
+                s in text
+                for s in (
+                    "429",
+                    "RESOURCE_EXHAUSTED",
+                    "404",
+                    "NOT_FOUND",
+                    "503",
+                    "UNAVAILABLE",
+                    "504",
+                    "DEADLINE_EXCEEDED",
+                    "timed out",
+                    "Timeout",
+                )
+            )
+
+            if first_error is None:
+                first_error = e
+
+            print(f"Gemini model '{model}' failed: {text[:120]}")
+
+            if not retryable:
+                raise
+
+    raise first_error
+
+
+# =========================================================
+# LANGUAGE SUPPORT (English / Kannada / Hindi)
+# =========================================================
+#
+# The Flutter app sends either the short app code
+# ("en", "kn", "hi") or a locale code ("kn-IN").
+# Every AI endpoint normalises it with normalize_lang()
+# and builds its prompt from the same LANGUAGES table,
+# so the AI answer, the on-screen text and the speech
+# always use the same language.
+#
+
+LANGUAGES = {
+    "en": {
+        "name": "English",
+        "script": "English (Latin script)",
+    },
+    "kn": {
+        "name": "Kannada",
+        "script": "Kannada script (ಕನ್ನಡ ಲಿಪಿ)",
+    },
+    "hi": {
+        "name": "Hindi",
+        "script": "Hindi in Devanagari script (देवनागरी)",
+    },
+}
+
+
+def normalize_lang(value):
+    """'kn', 'kn-IN', 'KN_in' -> 'kn'. Unknown -> 'en'."""
+    code = (
+        str(value or "en")
+        .strip()
+        .lower()
+        .replace("_", "-")
+        .split("-")[0]
+    )
+    return code if code in LANGUAGES else "en"
+
+
+def language_rules(code):
+    """Prompt block forcing the whole answer into one language."""
+    info = LANGUAGES[code]
+
+    if code == "en":
+        return (
+            "LANGUAGE RULE: Write the COMPLETE answer in plain, "
+            "simple English only. Do not use any Kannada or Hindi "
+            "words or script."
+        )
+
+    return (
+        f"LANGUAGE RULE (VERY IMPORTANT): Write the COMPLETE answer, "
+        f"including every heading, label, sentence and list item, "
+        f"in {info['name']} using {info['script']}. "
+        f"Do NOT write any sentence or heading in English. "
+        f"Do not add an English translation. "
+        f"Only unavoidable technical tokens such as NPK, pH, DAP, "
+        f"MOP, kg or acre may stay in Latin letters, and numbers "
+        f"may use normal digits. Use simple words a farmer "
+        f"understands and avoid markdown symbols such as ** or #."
+    )
+
+
+def _count_scripts(text):
+    kannada = sum(1 for c in text if "\u0c80" <= c <= "\u0cff")
+    devanagari = sum(1 for c in text if "\u0900" <= c <= "\u097f")
+    latin = sum(1 for c in text if c.isascii() and c.isalpha())
+    return kannada, devanagari, latin
+
+
+def is_in_language(text, code):
+    """
+    Cheap script check used to catch wrong-language or mixed-language
+    answers. Kannada/Hindi answers must be mostly in their own script;
+    English answers must not contain Kannada/Devanagari.
+    """
+    kannada, devanagari, latin = _count_scripts(text)
+
+    if code == "kn":
+        total = kannada + devanagari + latin
+        return total > 0 and kannada / total >= 0.6 and devanagari == 0
+
+    if code == "hi":
+        total = kannada + devanagari + latin
+        return total > 0 and devanagari / total >= 0.6 and kannada == 0
+
+    return kannada == 0 and devanagari == 0
+
+
+def generate_in_language(prompt, code):
+    """
+    Calls Gemini with a language-aware prompt. If the answer is not
+    in the requested language (or is mixed), asks Gemini once to
+    rewrite it completely in that language. Returns the final text
+    (may be empty) and whether it passed the language check.
+    """
+    response = _gemini_generate(prompt)
+
+    text = (response.text or "").strip() if response else ""
+
+    if not text or is_in_language(text, code):
+        return text, bool(text)
+
+    print(f"Answer was not fully in '{code}'. Rewriting once...")
+
+    retry_prompt = f"""
+Rewrite the text below so that it is written ENTIRELY in
+{LANGUAGES[code]['name']} ({LANGUAGES[code]['script']}).
+Keep the same meaning, structure and headings, but translate the
+headings too. Return only the rewritten text.
+
+{language_rules(code)}
+
+TEXT:
+{text}
+"""
+
+    retry = _gemini_generate(retry_prompt)
+
+    fixed = (retry.text or "").strip() if retry else ""
+
+    if fixed and is_in_language(fixed, code):
+        return fixed, True
+
+    return (fixed or text), False
+
+
+def strip_markdown(text):
+    """Removes markdown symbols so they are not read aloud."""
+    import re
+
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    cleaned = re.sub(r"__(.*?)__", r"\1", cleaned)
+    cleaned = re.sub(r"#{1,6}\s*", "", cleaned)
+    cleaned = cleaned.replace("`", "").replace("*", "")
+    cleaned = re.sub(r"^\s*[-•]\s*", "", cleaned, flags=re.M)
+    cleaned = re.sub(r"\n\s*\n", "\n", cleaned)
+    return cleaned.strip()
 
 
 # =========================================================
@@ -62,73 +270,11 @@ latest_sensor_data = {
     "temperature": 0,
     "humidity": 0,
     "rain": False,
-    # NPK stays None (not 0) until a genuine reading arrives.
-    "nitrogen": None,
-    "phosphorus": None,
-    "potassium": None,
-    "npk_valid": False,
-    "npk_error": "no_data_received",
     "pump_status": "OFF"
 }
 
-# Unix time of the last POST from the ESP32 and the last POST that
-# carried a valid NPK reading (None until that happens).
+# Unix time of the last POST from the ESP32 (None until that happens).
 last_sensor_update = None
-last_npk_update = None
-
-# Typical RS485 NPK sensors report 0-1999 mg/kg. Anything outside
-# this range is a corrupted/misparsed frame, not a soil reading.
-NPK_MAX_VALID = 1999
-
-
-def parse_npk(data):
-    """
-    Validate the NPK part of an ESP32 payload.
-
-    Returns (values, error) where values is
-    {"nitrogen", "phosphorus", "potassium"} as floats, or all None
-    when the reading is not valid, and error is None or a short
-    reason string. Zero is NOT used as a stand-in for "no reading".
-    """
-
-    empty = {"nitrogen": None, "phosphorus": None, "potassium": None}
-
-    # Newer firmware states explicitly whether the NPK read worked.
-    if data.get("npk_valid") is False:
-        return empty, str(
-            data.get("npk_error") or "sensor_reported_invalid"
-        )
-
-    raw = {}
-
-    for key in ("nitrogen", "phosphorus", "potassium"):
-
-        value = data.get(key)
-
-        if value is None or isinstance(value, bool):
-            return empty, f"missing_{key}"
-
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return empty, f"non_numeric_{key}"
-
-        if math.isnan(value) or math.isinf(value):
-            return empty, f"non_numeric_{key}"
-
-        if value < 0 or value > NPK_MAX_VALID:
-            return empty, f"out_of_range_{key}"
-
-        raw[key] = value
-
-    # Older firmware always sent 0/0/0 because the RS485 read was
-    # never implemented. All three at exactly 0 with no validity
-    # flag is that placeholder, not a measurement.
-    if "npk_valid" not in data and not any(raw.values()):
-        return empty, "no_npk_data_from_esp32"
-
-    return raw, None
-
 
 # =========================================================
 # GET SENSOR DATA
@@ -142,15 +288,10 @@ def get_sensor_data():
     return jsonify({
         "success": True,
         **latest_sensor_data,
-        # Seconds since the ESP32 last posted anything / a valid NPK
-        # reading (None if that has never happened).
+        # Seconds since the ESP32 last posted (None if never).
         "data_age_seconds": (
             None if last_sensor_update is None
             else round(now - last_sensor_update, 1)
-        ),
-        "npk_age_seconds": (
-            None if last_npk_update is None
-            else round(now - last_npk_update, 1)
         )
     })
 
@@ -164,13 +305,10 @@ def receive_sensor_data():
 
     global latest_sensor_data
     global last_sensor_update
-    global last_npk_update
 
     try:
 
         data = request.get_json(silent=True) or {}
-
-        npk_values, npk_error = parse_npk(data)
 
         latest_sensor_data = {
 
@@ -190,16 +328,6 @@ def receive_sensor_data():
                 data.get("rain", False)
             ),
 
-            "nitrogen": npk_values["nitrogen"],
-
-            "phosphorus": npk_values["phosphorus"],
-
-            "potassium": npk_values["potassium"],
-
-            "npk_valid": npk_error is None,
-
-            "npk_error": npk_error,
-
             "pump_status": str(
                 data.get("pump_status", "OFF")
             ).upper()
@@ -207,20 +335,8 @@ def receive_sensor_data():
 
         last_sensor_update = time.time()
 
-        if npk_error is None:
-            last_npk_update = last_sensor_update
-
         print("\n========== ESP32 SENSOR DATA ==========")
         print(latest_sensor_data)
-
-        if npk_error is None:
-            print(
-                "NPK OK -> N:", latest_sensor_data["nitrogen"],
-                "P:", latest_sensor_data["phosphorus"],
-                "K:", latest_sensor_data["potassium"], "mg/kg"
-            )
-        else:
-            print("NPK NOT AVAILABLE:", npk_error)
 
         print("=======================================\n")
 
@@ -265,6 +381,46 @@ def home():
 # SMART IRRIGATION
 # =========================================================
 
+IRRIGATION_TEXT = {
+    "kn": {
+        "critical": {
+            "recommendation": "ನೀರಾವರಿ ತುರ್ತಾಗಿ ಅಗತ್ಯವಿದೆ.",
+            "message": "ಮಣ್ಣಿನ ತೇವಾಂಶ {m}% ಇದ್ದು, ಮಣ್ಣು ತುಂಬಾ ಒಣಗಿದೆ. ತಕ್ಷಣ ನೀರಾವರಿ ಪ್ರಾರಂಭಿಸಿ.",
+        },
+        "low": {
+            "recommendation": "ನೀರಾವರಿ ಮಾಡುವುದು ಸೂಕ್ತ.",
+            "message": "ಮಣ್ಣಿನ ತೇವಾಂಶ {m}% ಇದ್ದು, ಕಡಿಮೆ ಇದೆ. ಬೆಳೆಗೆ ನೀರು ಹಾಯಿಸಿ.",
+        },
+        "moderate": {
+            "recommendation": "ಮಧ್ಯಮ ಪ್ರಮಾಣದ ನೀರಾವರಿ ಬೇಕಾಗಬಹುದು.",
+            "message": "ಮಣ್ಣಿನ ತೇವಾಂಶ {m}% ಇದ್ದು, ಮಧ್ಯಮ ಮಟ್ಟದಲ್ಲಿದೆ. ಮಣ್ಣನ್ನು ಗಮನಿಸುತ್ತಿರಿ ಮತ್ತು ಅಗತ್ಯವಿದ್ದರೆ ನೀರು ಹಾಯಿಸಿ.",
+        },
+        "sufficient": {
+            "recommendation": "ನೀರಾವರಿ ಅಗತ್ಯವಿಲ್ಲ.",
+            "message": "ಮಣ್ಣಿನ ತೇವಾಂಶ {m}% ಇದ್ದು, ಸಾಕಷ್ಟು ಇದೆ. ನೀರಾವರಿಯನ್ನು ಆಫ್ ಆಗಿಯೇ ಇಡಬಹುದು.",
+        },
+    },
+    "hi": {
+        "critical": {
+            "recommendation": "सिंचाई की तत्काल आवश्यकता है।",
+            "message": "मिट्टी में नमी {m}% है और मिट्टी बहुत सूखी है। तुरंत सिंचाई शुरू करें।",
+        },
+        "low": {
+            "recommendation": "सिंचाई करने की सलाह दी जाती है।",
+            "message": "मिट्टी में नमी {m}% है, जो कम है। फसल को पानी दें।",
+        },
+        "moderate": {
+            "recommendation": "मध्यम सिंचाई की आवश्यकता हो सकती है।",
+            "message": "मिट्टी में नमी {m}% है, जो मध्यम स्तर पर है। मिट्टी पर नज़र रखें और जरूरत होने पर सिंचाई करें।",
+        },
+        "sufficient": {
+            "recommendation": "सिंचाई की आवश्यकता नहीं है।",
+            "message": "मिट्टी में नमी {m}% है, जो पर्याप्त है। सिंचाई बंद रखी जा सकती है।",
+        },
+    },
+}
+
+
 @app.route("/predict_irrigation", methods=["POST"])
 def predict_irrigation():
 
@@ -299,9 +455,12 @@ def predict_irrigation():
             data.get("humidity", 0)
         )
 
+        lang_code = normalize_lang(data.get("lang"))
+
 
         print("\n======================================")
         print("SMART IRRIGATION REQUEST")
+        print("Language:", lang_code)
         print("Soil Moisture:", soil_moisture)
         print("Temperature:", temperature)
         print("Humidity:", humidity)
@@ -373,12 +532,54 @@ def predict_irrigation():
 
 
         # -----------------------------------------
+        # DECISION CODE (language independent)
+        # -----------------------------------------
+
+        if soil_moisture < 30:
+            decision = "critical"
+        elif soil_moisture < 50:
+            decision = "low"
+        elif soil_moisture < 70:
+            decision = "moderate"
+        else:
+            decision = "sufficient"
+
+
+        # -----------------------------------------
+        # TRANSLATE THE RECOMMENDATION (no AI needed)
+        # -----------------------------------------
+        #
+        # The decision is rule based, so the Kannada and Hindi text is
+        # built in (IRRIGATION_TEXT). It always matches the selected
+        # language, uses no AI quota and still works when Gemini is
+        # unavailable. ai_localized=True means "the text is in the
+        # selected language".
+        #
+
+        ai_localized = lang_code == "en"
+
+        translated = IRRIGATION_TEXT.get(lang_code, {}).get(decision)
+
+        if translated:
+            moisture_text = f"{round(soil_moisture, 1):g}"
+            recommendation = translated["recommendation"]
+            message = translated["message"].format(m=moisture_text)
+            ai_localized = True
+
+
+        # -----------------------------------------
         # RESPONSE
         # -----------------------------------------
 
         return jsonify({
 
             "success": True,
+
+            "lang": lang_code,
+
+            "decision": decision,
+
+            "ai_localized": ai_localized,
 
             "soil_moisture": soil_moisture,
 
@@ -445,6 +646,9 @@ def predict_fertilizer():
         ).strip()
 
         ph_value = data.get("ph", None)
+
+        lang_code = normalize_lang(data.get("lang"))
+        language_name = LANGUAGES[lang_code]["name"]
 
 
         if not crop:
@@ -665,102 +869,97 @@ Soil pH:
 {npk_information}
 
 
-IMPORTANT:
+IMPORTANT RULES:
 
-1. Do NOT use a fixed predefined answer.
+1. Analyse the combination of crop + soil type + soil pH and the
+   real nutrient needs of THAT crop. Do not give a fixed answer.
 
-2. Do NOT simply map a crop name to one fertilizer.
+2. Recommend 2 to 4 SPECIFIC fertilizers. Each one must be given
+   by its exact commercial name, the way it is sold in an Indian
+   fertilizer shop and printed on the bag. Examples of exact
+   names: Urea (46% N), DAP (18-46-0), MOP / Muriate of Potash
+   (60% K2O), SSP / Single Super Phosphate, Ammonium Sulphate,
+   Zinc Sulphate (21%), Gypsum, 19:19:19, 10:26:26, 20:20:0:13,
+   Vermicompost, FYM (farmyard manure), Neem Cake, and for acidic
+   soil Agricultural Lime or Dolomite. Choose the ones that really
+   suit this crop, soil type and pH.
 
-3. Analyze the combination of crop + soil type + soil pH.
+3. NEVER use a generic phrase such as "balanced NPK fertilizer",
+   "NPK fertilizer" or "compound fertilizer" as a fertilizer name.
+   The farmer must be able to walk into a shop and ask for each
+   fertilizer by its exact name.
 
-4. Consider the nutritional requirements of the specific crop.
+4. For EACH fertilizer explain: what it is (nutrients it
+   contains), why this crop needs it, WHEN to use it (crop growth
+   stage or days after sowing / planting) and HOW to use it
+   (method of application and a typical quantity per acre, split
+   into doses where needed).
 
-5. Consider how the supplied soil type affects nutrient
-   retention, drainage and fertilizer management.
+5. Give typical quantities as normal agronomic guidance per acre
+   (for example "about 40 to 50 kg per acre") and say clearly that
+   the exact quantity should be adjusted after a soil test. Do NOT
+   invent soil-test results that were not supplied.
 
-6. Consider how the supplied pH affects nutrient
-   availability.
+6. Soil type and pH must change the advice (for example leaching
+   in sandy soil, lime for acidic soil, gypsum for alkaline soil).
+   If the pH is a problem, name the soil amendment and explain how
+   to use it.
 
-7. Recommend the most appropriate fertilizer or fertilizer
-   combination based on the available information.
+7. Use plain, simple words a farmer understands. Do not use
+   markdown symbols such as ** or #, no tables and no JSON.
 
-8. If one fertilizer is not sufficient, recommend a suitable
-   combination.
+8. Do not mention programming, Flask, Flutter, APIs, Gemini or
+   backend systems in the answer.
 
-9. If the soil pH indicates a problem, clearly explain it.
+9. {language_rules(lang_code)}
 
-10. Do NOT invent soil-test measurements that were not
-    supplied by the farmer.
-
-11. Do NOT claim that a fertilizer is definitely required
-    if the available information is insufficient.
-
-12. When an exact fertilizer quantity cannot safely be
-    determined from the supplied information, say so and
-    explain that a soil test is required.
-
-13. Provide practical agricultural advice.
-
-14. The response should be detailed enough for a farmer to
-    understand the recommendation.
-
-15. Do not mention that the answer is hardcoded.
-
-16. Do not mention programming, Flask, Flutter, APIs,
-    Gemini or backend systems in the answer.
-
-17. Use plain and understandable English.
-
-18. Do not return JSON.
-
-19. Do not use markdown tables.
-
-20. Structure the answer using clear headings.
+10. FERTILIZER NAMES (exception to the language rule): when the
+    language is Kannada or Hindi, write each fertilizer name in the
+    script of that language and, in brackets directly after it, the
+    standard English name used on the bag, for example
+    "ಯೂರಿಯಾ (Urea)" or "डीएपी (DAP)". That bracket is the only
+    English allowed. For English, ignore this rule.
 
 
-RETURN THE ANSWER IN THIS STRUCTURE:
+ANSWER STRUCTURE (the headings below are in English only as a
+guide; write every heading in {language_name}):
 
-Recommended Fertilizer:
-[Name of fertilizer or fertilizer combination]
+Recommended Fertilizers:
+[List the exact fertilizer names, one per line, numbered]
 
-Fertilizer Type / Grade:
-[Available grade or composition if appropriate]
+Then repeat this block for EACH fertilizer:
 
-Why This Fertilizer:
-[Detailed explanation of why it suits this crop,
-soil type and pH]
+Fertilizer Name:
+[Exact name]
 
-Nutrient Benefits:
-[Explain nitrogen, phosphorus, potassium and any important
-secondary/micronutrients relevant to the recommendation]
+What It Is:
+[Short description: the nutrients it contains and its form]
 
-How It Helps the Crop:
-[Explain the effect on roots, leaves, flowering,
-fruiting, grain formation or overall crop growth as applicable]
+Why This Crop Needs It:
+[Reason for this crop, soil type and soil pH]
 
-How to Apply:
-[Explain practical application method]
+When to Use:
+[Crop growth stage / days after sowing or planting]
 
-When to Apply:
-[Explain suitable crop growth stages]
-
-Soil pH Consideration:
-[Explain how the supplied pH affects this recommendation]
-
-Expected Benefits:
-[Explain expected agricultural benefits]
+How to Use:
+[Application method, typical quantity per acre and how to split it]
 
 Precautions:
-[Explain over-application risks and important precautions]
+[One or two short, practical points]
 
-Alternative:
-[Give a reasonable alternative fertilizer or approach
-if appropriate]
+After all the fertilizers, add:
+
+Soil pH Consideration:
+[How the supplied soil pH affects this recommendation and what to
+correct, if anything]
+
+Application Schedule (Summary):
+[A short timeline: basal dose, first top dressing, second top
+dressing and so on]
 
 Important Note:
-[Explain that exact dosage should be based on soil testing,
-crop variety, growth stage and local agricultural guidance
-when required.]
+[Quantities are general guidance only; confirm with a soil test
+and the local agriculture officer.]
 """
 
 
@@ -771,12 +970,9 @@ when required.]
         print("Sending fertilizer request to Gemini...")
 
 
-        response = client.models.generate_content(
-
-            model=MODEL_NAME,
-
-            contents=prompt
-
+        answer, language_ok = generate_in_language(
+            prompt,
+            lang_code,
         )
 
 
@@ -784,16 +980,8 @@ when required.]
 
 
         # -----------------------------------------
-        # GET GEMINI ANSWER
+        # CHECK GEMINI ANSWER
         # -----------------------------------------
-
-        answer = ""
-
-
-        if response and response.text:
-
-            answer = response.text.strip()
-
 
         if not answer:
 
@@ -807,6 +995,7 @@ when required.]
             }), 500
 
 
+        print("Language OK:", language_ok)
         print("\n========== AI FERTILIZER ANSWER ==========")
         print(answer)
         print("==========================================\n")
@@ -819,6 +1008,10 @@ when required.]
         return jsonify({
 
             "success": True,
+
+            "lang": lang_code,
+
+            "language_ok": language_ok,
 
             "crop": crop,
 
@@ -963,9 +1156,11 @@ def ai_voice_advisor():
         lang = str(
             data.get(
                 "lang",
-                "en-IN"
+                "en"
             )
         ).strip()
+
+        lang_code = normalize_lang(lang)
 
 
         print("Question:", question)
@@ -992,12 +1187,12 @@ def ai_voice_advisor():
         # SELECT LANGUAGE
         # -----------------------------------------
 
-        if lang == "kn-IN":
+        if lang_code == "kn":
 
             language = "Kannada"
 
 
-        elif lang == "hi-IN":
+        elif lang_code == "hi":
 
             language = "Hindi"
 
@@ -1041,11 +1236,12 @@ The farmer asked:
 
 {question}
 
-Answer in {language}.
+{language_rules(lang_code)}
 
 IMPORTANT RULES:
 
-1. Respond ONLY in {language}.
+1. Respond ONLY in {language}, even if the farmer's question
+   was typed or spoken in another language.
 2. Give a complete natural answer.
 3. Do not answer using only numbers.
 4. Do not return JSON.
@@ -1070,31 +1266,17 @@ Farmer's question:
 
 
         # -----------------------------------------
-        # GEMINI REQUEST
+        # GEMINI REQUEST (language checked)
         # -----------------------------------------
 
-        response = client.models.generate_content(
-
-            model=MODEL_NAME,
-
-            contents=prompt
-
+        answer, language_ok = generate_in_language(
+            prompt,
+            lang_code,
         )
 
 
         print("Gemini response received.")
-
-
-        # -----------------------------------------
-        # GET ANSWER
-        # -----------------------------------------
-
-        answer = ""
-
-
-        if response and response.text:
-
-            answer = response.text.strip()
+        print("Language OK:", language_ok)
 
 
         if not answer:
@@ -1103,6 +1285,8 @@ Farmer's question:
                 "Sorry, I could not generate an answer. "
                 "Please try asking your question again."
             )
+
+            language_ok = False
 
 
         print("AI ANSWER:")
@@ -1118,6 +1302,10 @@ Farmer's question:
         return jsonify({
 
             "success": True,
+
+            "lang": lang_code,
+
+            "language_ok": language_ok,
 
             "answer": answer
 
@@ -1207,6 +1395,431 @@ Farmer's question:
             "error": error_message
 
         }), 500
+
+
+# =========================================================
+# TEXT TO SPEECH (server side, used for Kannada)
+# =========================================================
+#
+# WHY THIS EXISTS
+# The Flutter app speaks with the device's own TTS engine
+# (flutter_tts). Windows, Chrome and many Android phones ship
+# NO Kannada voice, so setLanguage("kn-IN") / speak() produces
+# silence without an error. This endpoint turns the exact
+# on-screen text into an MP3 with Google's online TTS (gTTS,
+# no API key needed, supports Kannada, Hindi and English) so
+# the app can play it with audioplayers.
+#
+
+TTS_MAX_CHARS = 4500
+
+TTS_CACHE = {}
+
+
+@app.route("/tts_audio/<audio_id>.mp3", methods=["GET"])
+def tts_audio(audio_id):
+
+    audio = TTS_CACHE.get(audio_id)
+
+    if audio is None:
+
+        return jsonify({"success": False, "error": "Audio expired."}), 404
+
+    return app.response_class(
+        audio,
+        mimetype="audio/mpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.route("/tts", methods=["POST"])
+def text_to_speech():
+
+    try:
+
+        from gtts import gTTS
+
+    except ImportError:
+
+        return jsonify({
+
+            "success": False,
+
+            "error": "gTTS is not installed. Run: pip install gTTS",
+
+            "error_type": "tts_unavailable"
+
+        }), 500
+
+
+    try:
+
+        data = request.get_json(silent=True) or {}
+
+        text = strip_markdown(
+            str(data.get("text", ""))
+        )
+
+        lang_code = normalize_lang(data.get("lang"))
+
+
+        if not text:
+
+            return jsonify({
+
+                "success": False,
+
+                "error": "No text to speak.",
+
+                "error_type": "empty_text"
+
+            }), 400
+
+
+        if len(text) > TTS_MAX_CHARS:
+
+            # Cut at a sentence end where possible.
+            cut = text[:TTS_MAX_CHARS]
+
+            for stop in ("।", ". ", "\n"):
+
+                position = cut.rfind(stop)
+
+                if position > TTS_MAX_CHARS * 0.6:
+
+                    cut = cut[: position + 1]
+
+                    break
+
+            text = cut
+
+
+        print("\n======================================")
+        print("TTS REQUEST")
+        print("Language:", lang_code)
+        print("Characters:", len(text))
+
+
+        import io
+
+        buffer = io.BytesIO()
+
+        gTTS(
+            text=text,
+            lang=lang_code,
+        ).write_to_fp(buffer)
+
+        audio = buffer.getvalue()
+
+        print("Audio bytes:", len(audio))
+        print("======================================\n")
+
+
+        if not audio:
+
+            return jsonify({
+
+                "success": False,
+
+                "error": "TTS returned no audio.",
+
+                "error_type": "tts_failed"
+
+            }), 502
+
+
+        if data.get("as_url"):
+
+            # Small in-memory cache so the app can stream the audio
+            # from a URL (works the same on Windows, web and Android).
+            import uuid
+
+            audio_id = uuid.uuid4().hex
+
+            TTS_CACHE[audio_id] = audio
+
+            while len(TTS_CACHE) > 20:
+
+                TTS_CACHE.pop(next(iter(TTS_CACHE)))
+
+            return jsonify({
+
+                "success": True,
+
+                "lang": lang_code,
+
+                "bytes": len(audio),
+
+                "path": f"/tts_audio/{audio_id}.mp3",
+
+            })
+
+
+        return app.response_class(
+
+            audio,
+
+            mimetype="audio/mpeg",
+
+            headers={
+
+                "Cache-Control": "no-store",
+
+                "X-TTS-Lang": lang_code,
+
+            }
+
+        )
+
+
+    except Exception as e:
+
+        print("TTS ERROR:", str(e))
+
+        return jsonify({
+
+            "success": False,
+
+            "error": str(e),
+
+            "error_type": "tts_failed"
+
+        }), 502
+
+
+# =========================================================
+# LIVE CROP / MANDI PRICES (Agmarknet via data.gov.in)
+# =========================================================
+#
+# Prices come from the Government of India "Current daily price
+# of various commodities from various markets (Mandi)" dataset.
+# A free API key is needed: register at https://data.gov.in and
+# add   DATA_GOV_API_KEY=your_key   to the .env file.
+#
+# The government data is in Rs per QUINTAL (100 kg). The app shows
+# Rs per KG, so the values are divided by 100 here.
+#
+
+DATA_GOV_API_KEY = os.getenv("DATA_GOV_API_KEY")
+
+MANDI_RESOURCE_URL = (
+    "https://api.data.gov.in/resource/"
+    "9ef84268-d588-465a-a308-a864a43d0070"
+)
+
+PRICE_CACHE = {}
+
+# data.gov.in answers plain Python requests with a 502 error, but
+# works normally when the request looks like a browser request.
+MANDI_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "Chrome/120 Safari/537.36"
+    ),
+    "Accept": "application/json",
+}
+PRICE_CACHE_SECONDS = 600
+
+# Last successful prices are also saved on disk so that a government
+# server outage does not leave the screen empty. Old prices are always
+# shown with their original date and a note; nothing is invented.
+PRICE_DISK_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "price_cache.json",
+)
+
+
+def _disk_cache_load():
+    import json
+
+    try:
+        with open(PRICE_DISK_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _disk_cache_save(crop, state, result):
+    import json
+
+    try:
+        store = _disk_cache_load()
+        store[f"{crop}|{state}"] = {
+            "saved_at": time.strftime("%d/%m/%Y %H:%M"),
+            "result": result,
+        }
+        with open(PRICE_DISK_FILE, "w", encoding="utf-8") as f:
+            json.dump(store, f, ensure_ascii=False)
+    except Exception as e:
+        print("Price cache save failed:", str(e))
+
+
+def _parse_arrival_date(value):
+    from datetime import datetime
+
+    try:
+        return datetime.strptime(str(value), "%d/%m/%Y")
+    except Exception:
+        return datetime.min
+
+
+def _per_kg(value):
+    try:
+        return f"{float(value) / 100:.1f}".rstrip("0").rstrip(".")
+    except Exception:
+        return "-"
+
+
+@app.route("/crop_prices", methods=["POST"])
+def crop_prices():
+
+    import requests
+
+    try:
+
+        data = request.get_json(silent=True) or {}
+
+        crop = str(data.get("crop", "")).strip().title()
+
+        state = str(data.get("state", "")).strip().title()
+
+        if not DATA_GOV_API_KEY:
+
+            return jsonify({
+
+                "success": False,
+
+                "records": [],
+
+                "error":
+                    "DATA_GOV_API_KEY is not set in the .env file.",
+
+                "error_type": "api_key"
+
+            }), 500
+
+
+        cache_key = (crop, state)
+
+        cached = PRICE_CACHE.get(cache_key)
+
+        if cached and time.time() - cached[0] < PRICE_CACHE_SECONDS:
+
+            return jsonify(cached[1])
+
+
+        params = {
+
+            "api-key": DATA_GOV_API_KEY,
+
+            "format": "json",
+
+            "limit": 200,
+
+        }
+
+        if crop:
+
+            params["filters[commodity]"] = crop
+
+        if state:
+
+            params["filters[state.keyword]"] = state
+
+
+        print("\n======================================")
+        print("CROP PRICE REQUEST")
+        print("Crop:", crop or "(all)")
+        print("State:", state or "(all)")
+
+        response = requests.get(
+            MANDI_RESOURCE_URL,
+            params=params,
+            headers=MANDI_HEADERS,
+            timeout=60,
+        )
+
+        response.raise_for_status()
+
+        raw = response.json().get("records", [])
+
+        raw.sort(
+            key=lambda r: _parse_arrival_date(r.get("arrival_date")),
+            reverse=True,
+        )
+
+        records = []
+
+        for r in raw[:50]:
+
+            records.append({
+
+                "commodity": r.get("commodity", ""),
+                "variety": r.get("variety", ""),
+                "market": r.get("market", ""),
+                "district": r.get("district", ""),
+                "state": r.get("state", ""),
+                "arrival_date": r.get("arrival_date", ""),
+                "min_price": _per_kg(r.get("min_price")),
+                "max_price": _per_kg(r.get("max_price")),
+                "modal_price": _per_kg(r.get("modal_price")),
+
+            })
+
+        print("Records found:", len(records))
+        print("======================================\n")
+
+        result = {
+
+            "success": True,
+
+            "unit": "Rs per kg",
+
+            "records": records,
+
+        }
+
+        if records:
+
+            PRICE_CACHE[cache_key] = (time.time(), result)
+
+            _disk_cache_save(crop, state, result)
+
+        return jsonify(result)
+
+
+    except Exception as e:
+
+        print("CROP PRICE ERROR:", str(e))
+
+        # Government server down: show the last saved prices (with
+        # their original dates) instead of an empty screen.
+        saved = _disk_cache_load().get(f"{crop}|{state}")
+
+        if saved and saved.get("result", {}).get("records"):
+
+            stale = dict(saved["result"])
+
+            stale["stale"] = True
+
+            stale["stale_note"] = (
+                "Live prices are unavailable right now. "
+                f"Showing the last prices saved on {saved.get('saved_at')}."
+            )
+
+            return jsonify(stale)
+
+        return jsonify({
+
+            "success": False,
+
+            "records": [],
+
+            "error": str(e),
+
+            "error_type": "price_unavailable"
+
+        }), 502
 
 
 # =========================================================

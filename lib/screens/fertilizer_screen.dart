@@ -3,12 +3,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../services/language_service.dart';
+import '../services/sensor_service.dart';
 
 // ============================================================
 // FLASK SERVER
 // ============================================================
 
-const String apiBaseUrl = "http://10.69.1.205:5000";
 
 // ============================================================
 // FERTILIZER SCREEN
@@ -62,12 +62,38 @@ class _FertilizerScreenState extends State<FertilizerScreen> {
 
   bool isLoading = false;
 
+  // Increases on every request / language change so a late answer
+  // written in the previous language is never shown.
+  int _requestId = 0;
+  String _lastLang = LanguageService.lang.value;
+
+  @override
+  void initState() {
+    super.initState();
+    LanguageService.lang.addListener(_onLanguageChanged);
+  }
+
+  void _onLanguageChanged() {
+    if (LanguageService.lang.value == _lastLang) return;
+    _lastLang = LanguageService.lang.value;
+
+    if (!mounted) return;
+
+    // The shown recommendation was written in the old language:
+    // ask the server again so it matches the new language.
+    if (showResult || isLoading) {
+      getRecommendation();
+    }
+  }
+
   // ==========================================================
   // DISPOSE
   // ==========================================================
 
   @override
   void dispose() {
+    LanguageService.lang.removeListener(_onLanguageChanged);
+    _requestId++;
     cropController.dispose();
     phController.dispose();
     super.dispose();
@@ -121,6 +147,8 @@ class _FertilizerScreenState extends State<FertilizerScreen> {
     // --------------------------------------------------------
     // SHOW LOADING
     // --------------------------------------------------------
+
+    final int myRequest = ++_requestId;
 
     setState(() {
       isLoading = true;
@@ -190,6 +218,9 @@ class _FertilizerScreenState extends State<FertilizerScreen> {
       // RESPONSE
       // ------------------------------------------------------
 
+      // A newer request (e.g. after a language change) replaced this one.
+      if (!mounted || myRequest != _requestId) return;
+
       if (response.statusCode == 200) {
         final Map<String, dynamic> data =
             jsonDecode(response.body);
@@ -205,7 +236,9 @@ class _FertilizerScreenState extends State<FertilizerScreen> {
               .trim()
               .isEmpty) {
             throw Exception(
-              "AI returned an empty recommendation.",
+              LanguageService.t(
+                "unable_to_generate_recommendation",
+              ),
             );
           }
 
@@ -216,11 +249,12 @@ class _FertilizerScreenState extends State<FertilizerScreen> {
             showResult = true;
           });
         } else {
+          // Never show the server's own (English) error text.
           throw Exception(
-            data["error"] ??
-                LanguageService.t(
-                  "unable_to_generate_recommendation",
-                ),
+            _serverErrorMessage(
+              data["error_type"]?.toString(),
+              response.statusCode,
+            ),
           );
         }
       } else {
@@ -229,17 +263,16 @@ class _FertilizerScreenState extends State<FertilizerScreen> {
         // ----------------------------------------------------
 
         String message =
-            "${LanguageService.t("server_error")}: "
-            "${response.statusCode}";
+            _serverErrorMessage(null, response.statusCode);
 
         try {
           final data =
               jsonDecode(response.body);
 
-          if (data["error"] != null) {
-            message =
-                data["error"].toString();
-          }
+          message = _serverErrorMessage(
+            data["error_type"]?.toString(),
+            response.statusCode,
+          );
         } catch (_) {}
 
         throw Exception(message);
@@ -249,6 +282,8 @@ class _FertilizerScreenState extends State<FertilizerScreen> {
         "FERTILIZER ERROR: $e",
       );
 
+      if (!mounted || myRequest != _requestId) return;
+
       setState(() {
         showResult = false;
       });
@@ -257,12 +292,28 @@ class _FertilizerScreenState extends State<FertilizerScreen> {
         getFriendlyErrorMessage(e),
       );
     } finally {
-      if (mounted) {
+      if (mounted && myRequest == _requestId) {
         setState(() {
           isLoading = false;
         });
       }
     }
+  }
+
+  // ==========================================================
+  // SERVER ERROR -> TRANSLATED MESSAGE
+  // ==========================================================
+
+  String _serverErrorMessage(String? type, int status) {
+    if (type == "quota") {
+      return LanguageService.t("ai_quota_reached");
+    }
+
+    if (type == "api_key") {
+      return LanguageService.t("api_key_problem");
+    }
+
+    return "${LanguageService.t("server_error")}: $status";
   }
 
   // ==========================================================
@@ -275,9 +326,9 @@ class _FertilizerScreenState extends State<FertilizerScreen> {
     final message =
         error.toString();
 
-    if (message.contains(
-      "SocketException",
-    )) {
+    if (message.contains("SocketException") ||
+        message.contains("ClientException") ||
+        message.contains("Failed to fetch")) {
       return LanguageService.t(
         "cannot_connect_ai_server",
       );

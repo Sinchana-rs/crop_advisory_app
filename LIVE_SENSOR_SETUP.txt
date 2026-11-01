@@ -46,7 +46,9 @@ flutter run
 
 The Dashboard polls /sensor_data every 3 seconds.
 Irrigation automatically uses live soil/temperature/humidity values.
-Fertilizer automatically receives live N/P/K values; crop, soil type and pH remain manual because there is no crop/soil-type/pH sensor in the current hardware.
+Fertilizer advice uses the crop, soil type and pH entered manually, because there is no crop/soil-type/pH sensor in the current hardware.
+
+Sensors in the current hardware: soil moisture, DHT11 (temperature/humidity), rain sensor and the pump relay. The NPK sensor has been removed.
 
 IMPORTANT:
 Phone/ESP32 and the computer running Flask must be on the same Wi-Fi network.

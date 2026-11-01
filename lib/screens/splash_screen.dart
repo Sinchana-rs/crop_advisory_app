@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'login_screen.dart';
+import '../services/language_service.dart';
 
 class SplashScreen extends StatefulWidget {
   @override
@@ -85,7 +86,7 @@ class _SplashScreenState extends State<SplashScreen> {
 
               Text(
 
-                "AgriSense AI",
+                LanguageService.t("appName"),
 
                 style: TextStyle(
 
@@ -103,7 +104,7 @@ class _SplashScreenState extends State<SplashScreen> {
 
               Text(
 
-                "Multi-Agent Crop Advisory System",
+                LanguageService.t("appTagline"),
 
                 style: TextStyle(
 

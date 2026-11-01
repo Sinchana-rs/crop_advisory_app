@@ -33,9 +33,29 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
   double? temperature;
   double? humidity;
 
+  // Increases on every request / language change so a late answer
+  // written in the previous language is never shown.
+  int _requestId = 0;
+  String _lastLang = LanguageService.lang.value;
+
+  void _onLanguageChanged() {
+    if (LanguageService.lang.value == _lastLang) return;
+    _lastLang = LanguageService.lang.value;
+
+    if (!mounted) return;
+
+    // The shown recommendation was written in the old language:
+    // ask the server again so it matches the new language.
+    if (soilMoisture != null || loading) {
+      predictIrrigation(fromLiveSensor: true);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+
+    LanguageService.lang.addListener(_onLanguageChanged);
 
     _loadLiveSensors();
 
@@ -68,6 +88,8 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
 
   @override
   void dispose() {
+    LanguageService.lang.removeListener(_onLanguageChanged);
+    _requestId++;
     _sensorTimer?.cancel();
 
     moistureController.dispose();
@@ -113,6 +135,8 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
       return;
     }
 
+    final int myRequest = ++_requestId;
+
     setState(() {
       loading = true;
     });
@@ -142,6 +166,9 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
       debugPrint(
         "Irrigation Response: ${response.body}",
       );
+
+      // A newer request (e.g. after a language change) replaced this one.
+      if (!mounted || myRequest != _requestId) return;
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -181,6 +208,8 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
       debugPrint(
         "IRRIGATION ERROR: $e",
       );
+
+      if (!mounted || myRequest != _requestId) return;
 
       setState(() {
         loading = false;
@@ -879,7 +908,9 @@ class _IrrigationScreenState extends State<IrrigationScreen> {
                 const Spacer(),
 
                 Text(
-                  pumpStatus,
+                  LanguageService.t(
+                    "pump_${pumpStatus.toUpperCase()}",
+                  ),
 
                   style: TextStyle(
                     fontWeight: FontWeight.bold,

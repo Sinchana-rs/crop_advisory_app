@@ -1,11 +1,17 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:http/http.dart' as http;
 
 import '../services/language_service.dart';
+import '../services/sensor_service.dart';
+
+// Same Flask server this screen already used for the AI answer.
+String get _voiceBaseUrl => apiBaseUrl;
 
 class VoiceAssistantScreen extends StatefulWidget {
   const VoiceAssistantScreen({super.key});
@@ -18,21 +24,55 @@ class VoiceAssistantScreen extends StatefulWidget {
 class _VoiceAssistantScreenState extends State<VoiceAssistantScreen> {
   final SpeechToText speech = SpeechToText();
   final FlutterTts tts = FlutterTts();
+  final AudioPlayer player = AudioPlayer();
 
   bool isListening = false;
   bool isLoading = false;
   bool isSpeaking = false;
 
-  String selectedLang = "en-IN";
+  // The voice language is ALWAYS the app language, so the AI answer,
+  // the text on screen and the speech can never disagree.
+  String get selectedLang => LanguageService.voiceLang();
+
+  String _lastLang = LanguageService.lang.value;
 
   String spokenText = "";
   String reply = "";
+
+  // Increases on every language change / new request so late
+  // responses from an old language are ignored.
+  int _requestId = 0;
 
   final Map<String, String> languages = {
     "English": "en-IN",
     "ಕನ್ನಡ": "kn-IN",
     "हिंदी": "hi-IN",
   };
+
+  @override
+  void initState() {
+    super.initState();
+    LanguageService.lang.addListener(_onLanguageChanged);
+  }
+
+  // A reply generated in the previous language must not stay on
+  // screen (or keep playing) after the language changes.
+  void _onLanguageChanged() {
+    if (LanguageService.lang.value == _lastLang) return;
+    _lastLang = LanguageService.lang.value;
+    _requestId++;
+    tts.stop();
+    player.stop();
+    speech.stop();
+    if (!mounted) return;
+    setState(() {
+      isListening = false;
+      isLoading = false;
+      isSpeaking = false;
+      spokenText = "";
+      reply = "";
+    });
+  }
 
   // =========================================================
   // REMOVE MARKDOWN FROM AI RESPONSE
@@ -42,15 +82,15 @@ class _VoiceAssistantScreenState extends State<VoiceAssistantScreen> {
     String cleaned = text;
 
     // Remove **bold**
-    cleaned = cleaned.replaceAll(
+    cleaned = cleaned.replaceAllMapped(
       RegExp(r'\*\*(.*?)\*\*'),
-      r'$1',
+      (m) => m.group(1) ?? '',
     );
 
     // Remove __bold__
-    cleaned = cleaned.replaceAll(
+    cleaned = cleaned.replaceAllMapped(
       RegExp(r'__(.*?)__'),
-      r'$1',
+      (m) => m.group(1) ?? '',
     );
 
     // Remove headings like ###
@@ -108,6 +148,7 @@ class _VoiceAssistantScreenState extends State<VoiceAssistantScreen> {
     }
 
     await tts.stop();
+    await player.stop();
 
     setState(() {
       isListening = true;
@@ -147,53 +188,70 @@ class _VoiceAssistantScreenState extends State<VoiceAssistantScreen> {
   // =========================================================
 
   Future<void> getAIReply() async {
+    final int myRequest = ++_requestId;
+    final String langCode = LanguageService.lang.value;
+
     setState(() {
       isLoading = true;
       reply = "";
     });
 
     try {
-      final response = await http.post(
-        Uri.parse(
-          "http://127.0.0.1:5000/ai_voice_advisor",
-        ),
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: jsonEncode({
-          "question": spokenText,
-          "lang": selectedLang,
-        }),
-      );
+      final response = await http
+          .post(
+            Uri.parse("$_voiceBaseUrl/ai_voice_advisor"),
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: jsonEncode({
+              "question": spokenText,
+              // Same code the rest of the app uses ("en"/"kn"/"hi").
+              "lang": langCode,
+            }),
+          )
+          .timeout(const Duration(seconds: 90));
 
       debugPrint("Server status: ${response.statusCode}");
       debugPrint("Server response: ${response.body}");
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+      // The language changed (or a newer request started) while
+      // waiting: drop this answer instead of showing it.
+      if (!mounted || myRequest != _requestId) return;
 
+      Map<String, dynamic> data = {};
+      try {
+        data = jsonDecode(response.body) as Map<String, dynamic>;
+      } catch (_) {}
+
+      if (response.statusCode == 200 && data["success"] == true) {
         String answer =
-            data["answer"]?.toString() ?? "";
+            cleanTextForSpeech(data["answer"]?.toString() ?? "");
 
-        // Clean markdown before showing and speaking
-        answer = cleanTextForSpeech(answer);
+        if (answer.isEmpty) {
+          setState(() {
+            reply = LanguageService.t("voiceNoAnswer");
+            isLoading = false;
+          });
+          return;
+        }
 
         setState(() {
           reply = answer;
           isLoading = false;
         });
 
-        await speak(answer);
+        await speak(answer, myRequest);
       } else {
+        // Error text always comes from the app's own translations so
+        // an English server message never appears in Kannada/Hindi.
+        final type = data["error_type"]?.toString();
+
         String errorMessage;
-
-        try {
-          final data = jsonDecode(response.body);
-
-          errorMessage =
-              data["answer"]?.toString() ??
-              "${LanguageService.t("serverError")}: ${response.statusCode}";
-        } catch (_) {
+        if (type == "quota") {
+          errorMessage = LanguageService.t("quotaReached");
+        } else if (type == "api_key") {
+          errorMessage = LanguageService.t("apiKeyProblem");
+        } else {
           errorMessage =
               "${LanguageService.t("serverError")}: ${response.statusCode}";
         }
@@ -206,9 +264,10 @@ class _VoiceAssistantScreenState extends State<VoiceAssistantScreen> {
     } catch (e) {
       debugPrint("VOICE ASSISTANT ERROR: $e");
 
+      if (!mounted || myRequest != _requestId) return;
+
       setState(() {
-        reply =
-            LanguageService.t("connectionError");
+        reply = LanguageService.t("connectionError");
         isLoading = false;
       });
     }
@@ -217,24 +276,71 @@ class _VoiceAssistantScreenState extends State<VoiceAssistantScreen> {
   // =========================================================
   // TEXT TO SPEECH
   // =========================================================
+  //
+  // English / Hindi: unchanged, the device voice (flutter_tts).
+  //
+  // Kannada: most devices (Windows, Chrome, many phones) have no
+  // Kannada voice and flutter_tts then stays silent without any
+  // error, so Kannada is synthesised by the Flask /tts endpoint
+  // and played with audioplayers. If that fails the device voice
+  // is tried as a last resort, and if nothing can speak the user
+  // sees a message instead of silence.
+  //
 
-  Future<void> speak(String text) async {
+  Future<void> speak(String text, [int? requestId]) async {
     if (text.trim().isEmpty) {
       return;
     }
 
-    // IMPORTANT:
-    // Clean the text again before speaking
+    final int myRequest = requestId ?? _requestId;
+    final String langCode = LanguageService.lang.value;
     final cleanText = cleanTextForSpeech(text);
 
     setState(() {
       isSpeaking = true;
     });
 
+    bool spoken = false;
+
+    try {
+      if (langCode == "kn") {
+        spoken = await _speakViaServer(cleanText, langCode, myRequest);
+
+        if (!spoken && myRequest == _requestId) {
+          spoken = await _speakViaDevice(cleanText);
+        }
+      } else {
+        spoken = await _speakViaDevice(cleanText);
+
+        if (!spoken && myRequest == _requestId) {
+          spoken = await _speakViaServer(cleanText, langCode, myRequest);
+        }
+      }
+    } catch (e) {
+      debugPrint("TTS ERROR: $e");
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      isSpeaking = false;
+    });
+
+    if (!spoken && myRequest == _requestId) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(LanguageService.t("audioUnavailable")),
+        ),
+      );
+    }
+  }
+
+  Future<bool> _speakViaDevice(String cleanText) async {
     try {
       await tts.stop();
 
-      await tts.setLanguage(selectedLang);
+      final result = await tts.setLanguage(selectedLang);
+      debugPrint("TTS setLanguage($selectedLang) -> $result");
 
       await tts.setSpeechRate(0.65);
 
@@ -242,15 +348,77 @@ class _VoiceAssistantScreenState extends State<VoiceAssistantScreen> {
 
       await tts.awaitSpeakCompletion(true);
 
-      await tts.speak(cleanText);
-    } catch (e) {
-      debugPrint("TTS ERROR: $e");
-    }
+      final spoke = await tts.speak(cleanText);
+      debugPrint("TTS device speak -> $spoke");
 
-    if (mounted) {
-      setState(() {
-        isSpeaking = false;
+      return spoke == 1 || spoke == true;
+    } catch (e) {
+      debugPrint("Device TTS error: $e");
+      return false;
+    }
+  }
+
+  Future<bool> _speakViaServer(
+    String cleanText,
+    String langCode,
+    int requestId,
+  ) async {
+    StreamSubscription<void>? completeSub;
+
+    try {
+      await tts.stop();
+      await player.stop();
+
+      final response = await http
+          .post(
+            Uri.parse("$_voiceBaseUrl/tts"),
+            headers: {"Content-Type": "application/json"},
+            body: jsonEncode({
+              "text": cleanText,
+              "lang": langCode,
+              "as_url": true,
+            }),
+          )
+          .timeout(const Duration(seconds: 120));
+
+      debugPrint("TTS server status: ${response.statusCode}");
+
+      if (response.statusCode != 200) return false;
+
+      // Language changed while the audio was being prepared.
+      if (!mounted || requestId != _requestId) return true;
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final path = data["path"]?.toString() ?? "";
+
+      if (path.isEmpty) return false;
+
+      final done = Completer<bool>();
+
+      completeSub = player.onPlayerComplete.listen((_) {
+        if (!done.isCompleted) done.complete(true);
       });
+
+      await player.play(UrlSource("$_voiceBaseUrl$path"));
+
+      // Wait until playback finishes (or is stopped / language changes).
+      while (!done.isCompleted) {
+        await Future.delayed(const Duration(milliseconds: 300));
+
+        if (!mounted || requestId != _requestId) break;
+
+        if (player.state == PlayerState.stopped ||
+            player.state == PlayerState.disposed) {
+          break;
+        }
+      }
+
+      return true;
+    } catch (e) {
+      debugPrint("Server TTS error: $e");
+      return false;
+    } finally {
+      await completeSub?.cancel();
     }
   }
 
@@ -260,6 +428,7 @@ class _VoiceAssistantScreenState extends State<VoiceAssistantScreen> {
 
   Future<void> stopSpeaking() async {
     await tts.stop();
+    await player.stop();
 
     setState(() {
       isSpeaking = false;
@@ -272,8 +441,11 @@ class _VoiceAssistantScreenState extends State<VoiceAssistantScreen> {
 
   @override
   void dispose() {
+    LanguageService.lang.removeListener(_onLanguageChanged);
+    _requestId++;
     speech.stop();
     tts.stop();
+    player.dispose();
     super.dispose();
   }
 
@@ -453,9 +625,12 @@ class _VoiceAssistantScreenState extends State<VoiceAssistantScreen> {
                         onChanged: (value) {
                           if (value == null) return;
 
-                          setState(() {
-                            selectedLang = value;
-                          });
+                          // Changing the language here changes it for the
+                          // whole app (and is saved), so text, AI answer
+                          // and speech always stay in the same language.
+                          LanguageService.changeLanguage(
+                            LanguageService.codeFromLocale(value),
+                          );
                         },
                       ),
                     ),
